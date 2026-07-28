@@ -42,6 +42,7 @@ func main() {
 		Handler: handler.NewRouter(handler.Dependencies{
 			Store:          repos.Store,
 			NetworkService: service.NewNetworkService(repos.Networks, repos.Subnets),
+			SubnetService:  service.NewSubnetService(repos.Subnets, repos.Networks),
 		}),
 	}
 

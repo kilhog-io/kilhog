@@ -15,7 +15,7 @@ import (
 
 var (
 	ErrNetworkNotFound = service.ErrNetworkNotFound
-	ErrSubnetNotFound  = errors.New("subnet not found")
+	ErrSubnetNotFound  = service.ErrSubnetNotFound
 )
 
 type NetworkRepository struct {

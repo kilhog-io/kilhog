@@ -1,0 +1,7 @@
+{
+  "name": "dmz",
+  "description": "Subnet DMZ avec adresse explicite",
+  "prefix": 24,
+  "address": "10.0.0.0",
+  "type": "ipv4"
+}

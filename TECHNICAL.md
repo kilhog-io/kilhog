@@ -82,6 +82,14 @@ Interfaces définies côté service (consommées par la logique métier) :
 - `NetworkRepository` — CRUD et listing des networks
 - `SubnetRepository` — CRUD, listing par network ou par parent
 
+## Utilitaires IPv4 (`internal/iputil`)
+
+| Fonction | Rôle |
+|----------|------|
+| `ParseIPv4Prefix` | Parse et normalise une adresse/prefix IPv4 |
+| `ValidateIPv4Subnet` | Vérifie containment parent et absence d'overlap entre siblings |
+| `FindFreeIPv4Block` | Trouve la première plage `/prefix` libre dans le CIDR d'un subnet parent |
+
 ## Couche de persistance (`internal/repository`)
 
 Backend de données **configurable et abstrait**. Deux drivers sont supportés : **SQLite** et **PostgreSQL**. Le service consomme les interfaces repository ; le choix du driver est transparent pour la logique métier.
@@ -274,6 +282,32 @@ Les migrations peuvent contenir des sections dialect-specific si nécessaire ; �
 | GET     | `/networks/{uuid}`  | Récupère un network par UUID |
 | PUT     | `/networks/{uuid}`  | Met à jour un network |
 | DELETE  | `/networks/{uuid}`  | Supprime un network (refusé si des subnets ont ce network comme parent) |
+| GET     | `/networks/{uuid}/subnets` | Liste tous les subnets d'un network |
+| POST    | `/networks/{uuid}/subnets` | Crée un subnet enfant direct du network |
+| GET     | `/networks/{uuid}/subnets/{subnet_uuid}` | Récupère un subnet du network |
+| PUT     | `/networks/{uuid}/subnets/{subnet_uuid}` | Met à jour la description d'un subnet |
+| DELETE  | `/networks/{uuid}/subnets/{subnet_uuid}` | Supprime un subnet (refusé s'il a des enfants) |
+| GET     | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | Liste les subnets enfants d'un subnet |
+| POST    | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | Crée un subnet enfant d'un subnet |
+
+> **Tenancy** : toutes les opérations sur les subnets passent par `/networks/{uuid}/…`. Le `uuid` du network dans l'URL est le périmètre d'isolation ; le serveur vérifie que chaque subnet appartient bien à ce network (directement ou via la hiérarchie de parents).
+
+### Tenancy et scoping API
+
+L'API est organisée autour du **network comme frontière de tenancy** :
+
+- **RBAC** : les permissions peuvent être définies par `network/{uuid}` sans parcourir l'arbre de subnets.
+- **Multi-tenancy** : chaque requête subnet porte explicitement le network cible ; un subnet d'un autre network renvoie `404`.
+- **Merge / fédération** : deux instances peuvent fusionner des networks indépendamment ; l'UUID network est la clé de regroupement.
+- **Parent implicite** : le corps de création ne contient plus `parent` — il est dérivé de l'URL, ce qui évite les incohérences URL/body.
+
+```
+/networks/{uuid}/subnets                              → enfants directs du network
+/networks/{uuid}/subnets/{subnet_uuid}                → CRUD d'un subnet
+/networks/{uuid}/subnets/{subnet_uuid}/subnets        → enfants directs du subnet
+```
+
+Le champ `parent` reste exposé dans les **réponses** (immuable après création) pour reconstruire la hiérarchie côté client.
 
 ### `GET /healthz`
 
@@ -395,6 +429,216 @@ Erreurs :
 - Validation des tags (clés uniques)
 - **Protection à la suppression** : appel à `SubnetRepository.ListByParent` avec `parent.kind = network` ; si des subnets existent, retourne `ErrNetworkHasChildren` (HTTP 409)
 
+### Subnets
+
+Toutes les routes subnets sont **scopées par network** (`{uuid}` = UUID du network). Le parent n'est **pas** fourni dans le corps de requête : il est implicite via l'URL.
+
+| Route | Parent implicite |
+|-------|------------------|
+| `POST /networks/{uuid}/subnets` | Le network `{uuid}` |
+| `POST /networks/{uuid}/subnets/{subnet_uuid}/subnets` | Le subnet `{subnet_uuid}` |
+
+Le champ `parent` reste présent dans les **réponses** JSON (immuable après création).
+
+#### `GET /networks/{uuid}/subnets`
+
+Liste tous les subnets appartenant au network, triés par nom.
+
+Réponse `200 OK` :
+
+```json
+{
+  "status": "success",
+  "data": [
+    {
+      "uuid": "660e8400-e29b-41d4-a716-446655440001",
+      "name": "dmz",
+      "description": "Subnet DMZ",
+      "prefix": 24,
+      "address": "10.0.0.0",
+      "type": "ipv4",
+      "parent": {"kind": "network", "uuid": "550e8400-e29b-41d4-a716-446655440000"}
+    }
+  ]
+}
+```
+
+Erreurs :
+
+| Code | Condition |
+|------|-----------|
+| `400` | UUID network invalide |
+| `404` | Network introuvable |
+
+#### `POST /networks/{uuid}/subnets`
+
+Crée un subnet IPv4 **enfant direct du network**. L'UUID est généré côté serveur.
+
+Corps de requête :
+
+```json
+{
+  "name": "dmz",
+  "description": "Subnet DMZ",
+  "prefix": 24,
+  "address": "10.0.0.0",
+  "type": "ipv4"
+}
+```
+
+| Champ         | Requis | Description |
+|---------------|--------|-------------|
+| `name`        | oui    | Nom unique au sein du network |
+| `description` | non    | Texte libre |
+| `prefix`      | oui    | Longueur du prefix IPv4 (1–32) |
+| `address`     | oui    | Adresse réseau ou hôte (obligatoire car parent = network) |
+| `type`        | non    | `ipv4` (défaut) ; `ipv6` refusé pour l'instant |
+
+Règles métier :
+
+- Pas d'overlap avec les autres subnets ayant le même parent (le network)
+- Pas de contrainte CIDR parent (le network n'a pas d'espace d'adressage)
+
+Réponse `201 Created` : le subnet créé dans `data`.
+
+Erreurs :
+
+| Code | Condition |
+|------|-----------|
+| `400` | UUID network invalide, corps JSON invalide, champs requis manquants, adresse invalide |
+| `404` | Network introuvable |
+| `409` | Nom déjà utilisé, overlap avec un sibling |
+
+#### `POST /networks/{uuid}/subnets/{subnet_uuid}/subnets`
+
+Crée un subnet IPv4 **enfant d'un subnet existant** dans le même network.
+
+Corps de requête (adresse explicite) :
+
+```json
+{
+  "name": "apps",
+  "description": "Subnet applicatif",
+  "prefix": 25,
+  "address": "10.0.0.0",
+  "type": "ipv4"
+}
+```
+
+Corps de requête (adresse auto-générée — omettre `address`) :
+
+```json
+{
+  "name": "apps",
+  "prefix": 25,
+  "type": "ipv4"
+}
+```
+
+| Champ         | Requis | Description |
+|---------------|--------|-------------|
+| `name`        | oui    | Nom unique au sein du network |
+| `description` | non    | Texte libre |
+| `prefix`      | oui    | Longueur du prefix IPv4 (1–32), plus spécifique que le parent |
+| `address`     | non    | Auto-générée si absente, dans le CIDR du parent |
+| `type`        | non    | `ipv4` (défaut) |
+
+Règles métier :
+
+- Le subnet parent doit appartenir au network `{uuid}`
+- L'adresse (explicite ou générée) doit appartenir au CIDR du parent
+- Pas d'overlap entre siblings du même parent subnet
+
+Erreurs :
+
+| Code | Condition |
+|------|-----------|
+| `400` | UUID invalides, adresse invalide, subnet hors CIDR parent, prefix trop large |
+| `404` | Network ou subnet parent introuvable dans ce network |
+| `409` | Nom déjà utilisé, overlap, aucune adresse libre |
+
+#### `GET /networks/{uuid}/subnets/{subnet_uuid}/subnets`
+
+Liste les subnets enfants directs d'un subnet parent.
+
+Réponse `200 OK` : tableau de subnets dans `data`.
+
+Erreurs :
+
+| Code | Condition |
+|------|-----------|
+| `400` | UUID invalides |
+| `404` | Network ou subnet parent introuvable dans ce network |
+
+#### `GET /networks/{uuid}/subnets/{subnet_uuid}`
+
+Récupère un subnet par UUID, en vérifiant qu'il appartient au network.
+
+Réponse `200 OK` : le subnet dans `data`.
+
+Erreurs :
+
+| Code | Condition |
+|------|-----------|
+| `400` | UUID invalides |
+| `404` | Network introuvable, ou subnet introuvable dans ce network |
+
+#### `PUT /networks/{uuid}/subnets/{subnet_uuid}`
+
+Met à jour **uniquement** la `description`. Les champs `name`, `prefix`, `address`, `type` et `parent` sont immuables.
+
+Corps de requête :
+
+```json
+{
+  "description": "Nouvelle description"
+}
+```
+
+Réponse `200 OK` : le subnet mis à jour dans `data`.
+
+Erreurs :
+
+| Code | Condition |
+|------|-----------|
+| `400` | UUID invalides ou corps invalide |
+| `404` | Network introuvable, ou subnet introuvable dans ce network |
+
+#### `DELETE /networks/{uuid}/subnets/{subnet_uuid}`
+
+Supprime un subnet **uniquement s'il n'a pas de subnets enfants**.
+
+Réponse `200 OK` :
+
+```json
+{
+  "status": "success",
+  "data": null
+}
+```
+
+Erreurs :
+
+| Code | Condition |
+|------|-----------|
+| `400` | UUID invalides |
+| `404` | Network introuvable, ou subnet introuvable dans ce network |
+| `409` | Le subnet a des subnets enfants |
+
+### Couche service (`internal/service/subnet.go`)
+
+`SubnetService` encapsule la logique métier des subnets IPv4 :
+
+- **Scoping tenancy** : chaque opération reçoit le `networkUUID` et vérifie l'appartenance via `ensureInNetwork`
+- Génération de l'UUID à la création
+- Validation du `name` (obligatoire, trim, unicité au sein du network)
+- Parent implicite dérivé de l'URL (`CreateInNetwork`)
+- Normalisation de l'adresse IPv4 (ex. `192.168.1.5/24` → `192.168.1.0/24`)
+- Détection d'overlap entre siblings via `internal/iputil`
+- Génération automatique d'adresse dans le CIDR du parent subnet (uniquement si `address` est absent)
+- **Mise à jour limitée** : seule la `description` est modifiable
+- **Protection à la suppression** : refus si des subnets enfants existent (`ErrSubnetHasChildren`, HTTP 409)
+
 ## Configuration
 
 | Variable           | Défaut              | Description |
@@ -465,6 +709,9 @@ Le dossier `scripts/dev/` contient des scripts Bash autonomes qui appellent l'AP
 | `create-networks.sh` | `network-prod.json`, `network-hors-prod.json` | `make dev-create-networks` | Crée `prod` et `hors-prod` |
 | `update-network-hors-prod.sh` | `network-hors-prod-update.json` | `make dev-update-network-hors-prod` | Met à jour `hors-prod` |
 | `delete-network-prod.sh` | — | `make dev-delete-network-prod` | Supprime `prod` |
+| `create-subnets.sh` | `subnet-dmz.json`, `subnet-apps-auto.json` | `make dev-create-subnets` | Crée `dmz` sous `hors-prod` (adresse explicite) puis `apps` sous `dmz` (adresse auto) |
+| `update-subnet-dmz.sh` | `subnet-dmz-update.json` | `make dev-update-subnet-dmz` | Met à jour la description de `dmz` |
+| `delete-subnet-apps.sh` | — | `make dev-delete-subnet-apps` | Supprime `apps` |
 
 Contenu des payloads :
 
@@ -473,6 +720,9 @@ Contenu des payloads :
 | `network-prod.json` | `prod` | `réseau de prod` |
 | `network-hors-prod.json` | `hors-prod` | *(absente)* |
 | `network-hors-prod-update.json` | `hors-prod` | `réseau de hors-prod` |
+| `subnet-dmz.json` | `dmz` | `Subnet DMZ avec adresse explicite 10.0.0.0/24` |
+| `subnet-apps-auto.json` | `apps` | `Subnet apps sous dmz, adresse auto-générée /25` |
+| `subnet-dmz-update.json` | — | `Subnet DMZ mis à jour` |
 
 Exemple d'enchaînement :
 
@@ -482,6 +732,9 @@ make run-dev
 
 # Terminal 2
 make dev-create-networks
+make dev-create-subnets
+make dev-update-subnet-dmz
+make dev-delete-subnet-apps
 make dev-update-network-hors-prod
 make dev-delete-network-prod
 ```

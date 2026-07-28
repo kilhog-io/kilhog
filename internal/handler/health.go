@@ -10,6 +10,7 @@ import (
 type Dependencies struct {
 	Store          *db.Store
 	NetworkService *service.NetworkService
+	SubnetService  *service.SubnetService
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -17,6 +18,9 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /healthz", healthHandler(deps.Store))
 	if deps.NetworkService != nil {
 		registerNetworkRoutes(mux, deps.NetworkService)
+	}
+	if deps.SubnetService != nil {
+		registerSubnetRoutes(mux, deps.SubnetService)
 	}
 	return mux
 }

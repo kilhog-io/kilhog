@@ -3,7 +3,7 @@ BIN_DIR := bin
 BIN := $(BIN_DIR)/$(APP_NAME)
 DEV_DB_DSN := file:kilhog.db?_pragma=foreign_keys(ON)
 
-.PHONY: build run-dev dev-create-networks dev-update-network-hors-prod dev-delete-network-prod
+.PHONY: build run-dev dev-create-networks dev-update-network-hors-prod dev-delete-network-prod dev-create-subnets dev-update-subnet-dmz dev-delete-subnet-apps
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -20,3 +20,12 @@ dev-update-network-hors-prod:
 
 dev-delete-network-prod:
 	./scripts/dev/delete-network-prod.sh
+
+dev-create-subnets:
+	./scripts/dev/create-subnets.sh
+
+dev-update-subnet-dmz:
+	./scripts/dev/update-subnet-dmz.sh
+
+dev-delete-subnet-apps:
+	./scripts/dev/delete-subnet-apps.sh

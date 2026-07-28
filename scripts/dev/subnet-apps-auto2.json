@@ -1,0 +1,6 @@
+{
+  "name": "apps2",
+  "description": "Subnet apps sous dmz avec adresse auto-générée",
+  "prefix": 25,
+  "type": "ipv4"
+}

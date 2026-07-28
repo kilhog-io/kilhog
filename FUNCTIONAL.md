@@ -48,7 +48,7 @@ Un **subnet** représente un espace d'adressage IP (block ou adresse unique).
 | `name`        | yes      | Display name. Unique au sein du network (tenancy) auquel il appartient. |
 | `description` | no       | Texte libre descriptif. |
 | `prefix`      | yes      | Prefix length (ex. `24` pour un `/24`). |
-| `address`     | yes      | Network or host address (ex. `192.168.1.0`, `192.168.1.42`). |
+| `address`     | conditional | Network or host address (ex. `192.168.1.0`, `192.168.1.42`). **Required** when the parent is a network. Optional when the parent is a subnet (auto-generated if absent). |
 | `type`        | yes      | Address family : `ipv4` ou `ipv6`. |
 | `parent`      | yes      | Reference to the subnet parent (voir ci-dessous). |
 | `tags`        | no       | Liste de paires key–value (`key`, `value`). |
@@ -61,6 +61,13 @@ Le champ `parent` indique la position du subnet dans la hiérarchie. Il peut ré
 2. **Un autre subnet** — le subnet est imbriqué dans un address space plus large.
 
 Un subnet appartient toujours, directement ou indirectement, à un unique root network.
+
+### Création
+
+Lors de la création d'un subnet :
+
+- Si le parent est un **network**, le champ `address` est **obligatoire**.
+- Si le parent est un **subnet**, `address` est optionnel : s'il est absent, une adresse est générée automatiquement dans le CIDR du parent, sans overlap avec les siblings.
 
 ### Méthode `CIDR`
 
