@@ -1,0 +1,11 @@
+---
+description: Exigence de tests unitaires pour le code Go
+globs: "*.go"
+alwaysApply: false
+---
+
+# TESTS AUTOMATISÉS
+
+- Pour chaque nouveau handler ou service créé, génère le fichier de test correspondant `_test.go`.
+- Utilise la méthode idiomatique des **Table-Driven Tests** de Go.
+- Utilise la bibliothèque standard `testing` ou `stretchr/testify` pour les assertions.

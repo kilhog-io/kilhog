@@ -1,0 +1,24 @@
+---
+description: Normes de développement et architecture pour le projet kilhog
+globs: "*.go"
+alwaysApply: true
+---
+
+# CONVENTIONS ET ARCHITECTURE GO
+
+## 1. Structure du projet (Standard Go Layout)
+- Le point d'entrée doit se trouver dans `cmd/kilhog/main.go`.
+- Le code métier, les handlers et les modèles DOIVENT être sous le dossier `internal/`.
+- Découpage strict par couches :
+  - `internal/handler/` : Réception des requêtes HTTP et validation des données.
+  - `internal/service/` : Logique métier pure (indépendante du HTTP).
+  - `internal/repository/` : Accès aux données / Base de données.
+
+## 2. Gestion des erreurs (Go Idiomatique)
+- N'utilise JAMAIS `panic()` dans le code applicatif ou les handlers.
+- Traite chaque erreur explicitement avec `if err != nil`.
+- Enveloppe le contexte des erreurs avec `fmt.Errorf("action échouée: %w", err)`.
+
+## 3. Interfaces et Injection de dépendances
+- Définis les interfaces **là où elles sont consommées** (ex: le service définit l'interface du repository dont il a besoin).
+- Utilise l'injection de dépendances par les constructeurs (fonctions `New...`).

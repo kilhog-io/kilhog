@@ -1,0 +1,23 @@
+---
+description: Normes REST, format des réponses JSON et codes HTTP
+globs: "internal/handler/*.go"
+alwaysApply: true
+---
+
+# STANDARDS DE L'API REST
+
+## 1. Format de Réponse Uniforme
+Toutes les réponses JSON doivent respecter la structure suivante :
+- En cas de succès : `{"status": "success", "data": ...}`
+- En cas d'erreur : `{"status": "error", "message": "Description lisible", "code": 400}`
+
+## 2. Codes HTTP et Validation
+- `200 OK` : Lecture ou modification réussie.
+- `201 Created` : Ressource créée.
+- `400 Bad Request` : Données d'entrée invalides (inclure le détail de validation).
+- `401 / 403` : Authentification manquant / Accès interdit.
+- `404 Not Found` : Ressource introuvable.
+- `500 Internal Error` : Erreur serveur (ne jamais exposer les détails d'erreurs internes au client).
+
+## 3. Endpoints Obligatoires
+- Toujours inclure un endpoint `GET /healthz` pour vérifier l'état du serveur.

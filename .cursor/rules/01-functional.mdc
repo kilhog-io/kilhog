@@ -1,0 +1,9 @@
+---
+description: Gestion des exigences et du fichier FUNCTIONAL.md
+globs: "*"
+alwaysApply: true
+---
+
+- Le fichier `FUNCTIONAL.md` contient les règles métier du projet.
+- Avant de coder, consulte toujours `FUNCTIONAL.md` pour valider le besoin.
+- Ne modifie JAMAIS `FUNCTIONAL.md` de ton propre chef : seul l'utilisateur décide d'ajouter ou modifier une règle métier.

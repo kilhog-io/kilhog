@@ -1,0 +1,28 @@
+---
+description: Règle de gestion du contrôle de version Git et de la traçabilité
+globs: "*"
+alwaysApply: true
+---
+
+# TRAÇABILITÉ ET WORKFLOW GIT
+
+## 1. Fréquence et Atomicité
+- Propose un commit Git **après chaque tâche achevée et fonctionnelle** (une fonctionnalité ajoutée, un bug corrigé ou une refactorisation).
+- Ne cumule pas plusieurs fonctionnalités indépendantes dans un seul commit.
+
+## 2. Vérifications Pré-Commit
+Avant de proposer ou d'exécuter un commit, tu DOIS vérifier :
+1. Le code fonctionne sans erreur critique ou erreur de syntaxe.
+2. Le fichier `TECHNICAL.md` a été mis à jour si la modification impacte l'architecture, une route ou la structure des données.
+
+## 3. Format des Messages de Commit
+Utilise la convention **Conventional Commits** en anglais pour des messages clairs :
+- `feat:` pour une nouvelle fonctionnalité métier (ex: `feat: ajout de la validation par clé API`)
+- `fix:` pour la correction d'un bug (ex: `fix: résolution du crash au démarrage du serveur`)
+- `docs:` pour la mise à jour de la documentation (ex: `docs: mise à jour de TECHNICAL.md avec les nouvelles routes`)
+- `refactor:` pour une réorganisation du code sans changement de fonctionnalité
+
+## 4. Interaction avec l'Utilisateur
+- À la fin de ton intervention, affiche le message de commit suggéré.
+- Si tu as accès au terminal, exécute le commit ou donne la commande exacte à l'utilisateur :
+  `git add . && git commit -m "type: description claire"`
