@@ -4,15 +4,20 @@ import (
 	"net/http"
 
 	"github.com/kilhog-io/kilhog/internal/repository/db"
+	"github.com/kilhog-io/kilhog/internal/service"
 )
 
 type Dependencies struct {
-	Store *db.Store
+	Store          *db.Store
+	NetworkService *service.NetworkService
 }
 
 func NewRouter(deps Dependencies) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler(deps.Store))
+	if deps.NetworkService != nil {
+		registerNetworkRoutes(mux, deps.NetworkService)
+	}
 	return mux
 }
 

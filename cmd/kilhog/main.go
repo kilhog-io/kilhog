@@ -13,6 +13,7 @@ import (
 	"github.com/kilhog-io/kilhog/internal/handler"
 	"github.com/kilhog-io/kilhog/internal/repository"
 	"github.com/kilhog-io/kilhog/internal/repository/db"
+	"github.com/kilhog-io/kilhog/internal/service"
 )
 
 func main() {
@@ -37,8 +38,11 @@ func main() {
 	}()
 
 	server := &http.Server{
-		Addr:    addr,
-		Handler: handler.NewRouter(handler.Dependencies{Store: repos.Store}),
+		Addr: addr,
+		Handler: handler.NewRouter(handler.Dependencies{
+			Store:          repos.Store,
+			NetworkService: service.NewNetworkService(repos.Networks, repos.Subnets),
+		}),
 	}
 
 	log.Printf("kilhog listening on %s (db=%s)", addr, cfg.Driver)

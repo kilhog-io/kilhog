@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	ErrNetworkNotFound = errors.New("network not found")
+	ErrNetworkNotFound = service.ErrNetworkNotFound
 	ErrSubnetNotFound  = errors.New("subnet not found")
 )
 

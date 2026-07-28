@@ -264,11 +264,16 @@ Les migrations peuvent contenir des sections dialect-specific si nécessaire ; �
 
 ## Routes API
 
-| Méthode | Route      | Description              |
-|---------|------------|--------------------------|
-| GET     | `/healthz` | État de santé du serveur (inclut un ping base de données) |
+| Méthode | Route               | Description |
+|---------|---------------------|-------------|
+| GET     | `/healthz`          | État de santé du serveur (inclut un ping base de données) |
+| GET     | `/networks`         | Liste tous les networks |
+| POST    | `/networks`         | Crée un network |
+| GET     | `/networks/{uuid}`  | Récupère un network par UUID |
+| PUT     | `/networks/{uuid}`  | Met à jour un network |
+| DELETE  | `/networks/{uuid}`  | Supprime un network (refusé si des subnets ont ce network comme parent) |
 
-Réponse `GET /healthz` :
+### `GET /healthz`
 
 ```json
 {
@@ -278,6 +283,115 @@ Réponse `GET /healthz` :
   }
 }
 ```
+
+### Networks
+
+#### `GET /networks`
+
+Liste tous les networks, triés par nom.
+
+Réponse `200 OK` :
+
+```json
+{
+  "status": "success",
+  "data": [
+    {
+      "uuid": "550e8400-e29b-41d4-a716-446655440000",
+      "name": "lab",
+      "description": "Réseau de laboratoire",
+      "tags": [{"key": "env", "value": "dev"}]
+    }
+  ]
+}
+```
+
+#### `POST /networks`
+
+Crée un network. L'UUID est généré côté serveur.
+
+Corps de requête :
+
+```json
+{
+  "name": "lab",
+  "description": "Réseau de laboratoire",
+  "tags": [{"key": "env", "value": "dev"}]
+}
+```
+
+| Champ         | Requis | Description |
+|---------------|--------|-------------|
+| `name`        | oui    | Nom unique en base |
+| `description` | non    | Texte libre |
+| `tags`        | non    | Paires key–value (clés uniques par resource) |
+
+Réponse `201 Created` : le network créé dans `data`.
+
+Erreurs :
+
+| Code | Condition |
+|------|-----------|
+| `400` | Corps JSON invalide, `name` manquant, clé de tag dupliquée |
+| `409` | `name` déjà utilisé |
+
+#### `GET /networks/{uuid}`
+
+Récupère un network par UUID.
+
+Réponse `200 OK` : le network dans `data`.
+
+Erreurs :
+
+| Code | Condition |
+|------|-----------|
+| `400` | UUID invalide |
+| `404` | Network introuvable |
+
+#### `PUT /networks/{uuid}`
+
+Met à jour un network existant. Le corps de requête a la même forme que `POST /networks`.
+
+Réponse `200 OK` : le network mis à jour dans `data`.
+
+Erreurs :
+
+| Code | Condition |
+|------|-----------|
+| `400` | UUID ou corps invalide |
+| `404` | Network introuvable |
+| `409` | `name` déjà utilisé par un autre network |
+
+#### `DELETE /networks/{uuid}`
+
+Supprime un network **uniquement s'il n'a pas de subnets enfants** (subnets dont le parent est ce network). Si au moins un subnet référence ce network comme parent, la suppression est refusée.
+
+Réponse `200 OK` :
+
+```json
+{
+  "status": "success",
+  "data": null
+}
+```
+
+Erreurs :
+
+| Code | Condition |
+|------|-----------|
+| `400` | UUID invalide |
+| `404` | Network introuvable |
+| `409` | Le network a des subnets enfants |
+
+### Couche service (`internal/service/network.go`)
+
+`NetworkService` encapsule la logique métier des networks :
+
+- Génération de l'UUID à la création
+- Validation du `name` (obligatoire, trim)
+- Unicité du `name` (vérification applicative avant insert/update)
+- Validation des tags (clés uniques)
+- **Protection à la suppression** : appel à `SubnetRepository.ListByParent` avec `parent.kind = network` ; si des subnets existent, retourne `ErrNetworkHasChildren` (HTTP 409)
 
 ## Configuration
 
