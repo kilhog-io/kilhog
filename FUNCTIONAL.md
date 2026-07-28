@@ -91,3 +91,54 @@ Les tags sont des metadata libres sous forme de paires **key–value** attachée
 | Network  | `name` | Database         |
 | Subnet   | `uuid` | Database         |
 | Subnet   | `name` | Network (tenancy)|
+
+## Persistance
+
+Les données métier (networks, subnets, tags) sont persistées dans une **base de données relationnelle**. La couche de persistance est **abstraite** : l'application supporte plusieurs moteurs sans changer le modèle métier ni les règles ci-dessus.
+
+### Moteurs supportés
+
+| Moteur     | Usage typique                          |
+|------------|----------------------------------------|
+| SQLite     | Développement local, déploiement léger |
+| PostgreSQL | Production, multi-instances            |
+
+Le choix du moteur est une **configuration de déploiement**, pas une règle métier. Les contraintes d'unicité et de hiérarchie s'appliquent de la même manière quel que soit le backend.
+
+### Création automatique de la base
+
+Si la base de données cible **n'existe pas encore**, l'application peut la **créer au démarrage** avant d'exécuter les migrations :
+
+- **SQLite** : création du fichier et des répertoires parents manquants.
+- **PostgreSQL** : création de la base via une connexion au catalogue `postgres` (ou équivalent).
+
+Si la base existe déjà, l'application s'y connecte sans la recréer.
+
+### Migrations SQL versionnées
+
+Le schéma de la base est géré par des **migrations SQL numérotées**. Chaque version possède deux scripts :
+
+- **upgrade** — applique les changements vers la version suivante ;
+- **downgrade** — annule ces changements et revient à la version précédente.
+
+Règles :
+
+- Les migrations s'exécutent **dans l'ordre croissant** des numéros de version.
+- Une version déjà appliquée n'est **jamais rejouée**.
+- Au démarrage, l'application applique automatiquement les migrations **upgrade** manquantes.
+- Le **downgrade** est disponible pour revenir en arrière (opération explicite, pas automatique au démarrage).
+
+### Intégrité des données persistées
+
+Les règles métier suivantes sont **garanties par le schéma** (contraintes SQL) :
+
+| Règle | Mécanisme |
+|-------|-----------|
+| Unicité globale du `uuid` et du `name` d'un network | Contrainte `UNIQUE` |
+| Unicité globale du `uuid` d'un subnet | Clé primaire |
+| Unicité du `name` d'un subnet au sein d'un network | Contrainte `UNIQUE (network, name)` |
+| Un subnet appartient toujours à un network (tenancy) | Clé étrangère `network_uuid` |
+| Un tag a une seule value par key et par resource | Clé primaire `(resource, key)` |
+| Suppression d'un network | Supprime en cascade ses subnets et tags associés |
+
+Le détail des tables et colonnes est décrit dans `TECHNICAL.md`.
