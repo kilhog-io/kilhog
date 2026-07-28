@@ -311,6 +311,25 @@ Compile le binaire dans `bin/kilhog` à partir de `./cmd/kilhog`.
 
 ## Run
 
+### Développement local (recommandé)
+
+```bash
+make run-dev
+```
+
+Compile l'application puis la lance avec SQLite :
+
+- **Driver** : `sqlite`
+- **Fichier** : `kilhog.db` à la racine du projet (créé automatiquement au premier démarrage)
+- **Migrations** : appliquées automatiquement (`KILHOG_AUTO_MIGRATE=true` par défaut)
+- **Écoute** : `http://0.0.0.0:8080`
+
+Le fichier `kilhog.db` est ignoré par Git (voir `.gitignore`).
+
+### Lancement direct
+
 ```bash
 go run ./cmd/kilhog
 ```
+
+Utilise les mêmes valeurs par défaut que `run-dev` (`sqlite`, DSN `file:kilhog.db?_pragma=foreign_keys(ON)`).
