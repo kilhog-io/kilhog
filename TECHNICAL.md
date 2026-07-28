@@ -324,7 +324,7 @@ Compile l'application puis la lance avec SQLite :
 - **Migrations** : appliquées automatiquement (`KILHOG_AUTO_MIGRATE=true` par défaut)
 - **Écoute** : `http://0.0.0.0:8080`
 
-Le fichier `kilhog.db` est ignoré par Git (voir `.gitignore`).
+Le fichier `kilhog.db` (et ses fichiers auxiliaires SQLite `kilhog.db-wal`, `kilhog.db-shm`) est ignoré par Git (voir `.gitignore`).
 
 ### Lancement direct
 
