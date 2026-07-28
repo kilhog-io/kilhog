@@ -21,6 +21,8 @@ kilhog/
 │   │   └── sqlite/      # Implémentation SQLite
 │   └── model/           # Modèles et structures de données
 ├── migrations/          # Scripts SQL versionnés embarqués (sqlite/ et postgres/)
+├── scripts/
+│   └── dev/             # Scripts HTTP pour le développement local
 ├── FUNCTIONAL.md        # Règles métier (définies par l'utilisateur)
 └── TECHNICAL.md         # Ce fichier
 ```
@@ -447,3 +449,39 @@ go run ./cmd/kilhog
 ```
 
 Utilise les mêmes valeurs par défaut que `run-dev` (`sqlite`, DSN `file:kilhog.db?_pragma=foreign_keys(ON)`).
+
+### Scripts HTTP de développement
+
+Le dossier `scripts/dev/` contient des scripts Bash autonomes qui appellent l'API REST sur une instance locale déjà démarrée (`make run-dev`). Chaque script lit un ou plusieurs fichiers JSON UTF-8 situés à côté de lui ; il n'y a pas de bibliothèque partagée entre scripts.
+
+**Prérequis** : `curl`. Les scripts `update-network-hors-prod.sh` et `delete-network-prod.sh` utilisent aussi `jq` pour retrouver l'UUID d'un network par son `name`.
+
+| Variable | Défaut | Description |
+|----------|--------|-------------|
+| `KILHOG_BASE_URL` | `http://localhost:8080` | URL de base de l'API |
+
+| Script | Fichier(s) JSON | Cible Make | Action |
+|--------|-----------------|------------|--------|
+| `create-networks.sh` | `network-prod.json`, `network-hors-prod.json` | `make dev-create-networks` | Crée `prod` et `hors-prod` |
+| `update-network-hors-prod.sh` | `network-hors-prod-update.json` | `make dev-update-network-hors-prod` | Met à jour `hors-prod` |
+| `delete-network-prod.sh` | — | `make dev-delete-network-prod` | Supprime `prod` |
+
+Contenu des payloads :
+
+| Fichier | `name` | `description` |
+|---------|--------|---------------|
+| `network-prod.json` | `prod` | `réseau de prod` |
+| `network-hors-prod.json` | `hors-prod` | *(absente)* |
+| `network-hors-prod-update.json` | `hors-prod` | `réseau de hors-prod` |
+
+Exemple d'enchaînement :
+
+```bash
+# Terminal 1
+make run-dev
+
+# Terminal 2
+make dev-create-networks
+make dev-update-network-hors-prod
+make dev-delete-network-prod
+```
