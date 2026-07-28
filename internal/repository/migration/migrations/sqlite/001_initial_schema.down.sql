@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS tags;
+DROP TABLE IF EXISTS subnets;
+DROP TABLE IF EXISTS networks;
+DROP TABLE IF EXISTS schema_migrations;

@@ -32,7 +32,7 @@ func TestHealth(t *testing.T) {
 			req := httptest.NewRequest(tt.method, "/healthz", nil)
 			rec := httptest.NewRecorder()
 
-			Health(rec, req)
+			NewRouter(Dependencies{}).ServeHTTP(rec, req)
 
 			if rec.Code != tt.wantStatusCode {
 				t.Fatalf("status code = %d, want %d", rec.Code, tt.wantStatusCode)

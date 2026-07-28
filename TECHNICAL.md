@@ -20,7 +20,7 @@ kilhog/
 │   │   ├── postgres/    # Implémentation PostgreSQL
 │   │   └── sqlite/      # Implémentation SQLite
 │   └── model/           # Modèles et structures de données
-├── migrations/          # Scripts SQL versionnés ({version}_{name}.up.sql / .down.sql)
+├── migrations/          # Scripts SQL versionnés embarqués (sqlite/ et postgres/)
 ├── FUNCTIONAL.md        # Règles métier (définies par l'utilisateur)
 └── TECHNICAL.md         # Ce fichier
 ```
@@ -96,6 +96,24 @@ service (NetworkRepository, SubnetRepository)
 
 Chaque driver implémente les interfaces définies dans `internal/service`. Les requêtes SQL utilisent des dialectes adaptés là où nécessaire (types UUID, `TIMESTAMPTZ`, etc.).
 
+Les implémentations concrètes des repositories se trouvent dans `internal/repository/` (`network_repository.go`, `subnet_repository.go`) et sont instanciées via `repository.Open`.
+
+### Accès concurrents
+
+Les appels API peuvent arriver en parallèle. La couche `db.Store` fournit les primitives suivantes :
+
+| Mécanisme | Rôle |
+|-----------|------|
+| Pool `database/sql` | Connexions concurrentes (lectures parallèles) |
+| `WithWriteLock` | Sur SQLite, mutex applicatif sérialisant les écritures |
+| `WithTx` / `WithWriteTx` | Transactions SQL atomiques (prêtes pour la logique métier future) |
+| `AcquireMigrationLock` | Verrou exclusif pendant les migrations (mutex SQLite, `pg_advisory_lock` PostgreSQL) |
+| WAL + `busy_timeout` (SQLite) | Lecteurs non bloqués par les écrivains |
+
+Les opérations de mutation (`Create`, `Update`, `Delete`) passent par `WithWriteTx` : verrou d'écriture SQLite + transaction SQL. Les lectures (`Get*`, `List*`) utilisent le pool directement.
+
+Sur PostgreSQL, le verrou applicatif SQLite est désactivé : la concurrence est gérée par MVCC et les transactions SQL.
+
 ### Connexion et création de la base
 
 Au démarrage, l'application :
@@ -110,7 +128,17 @@ Au démarrage, l'application :
 
 ### Migrations SQL versionnées
 
-Les scripts SQL sont stockés dans `migrations/` à la racine du projet.
+Les scripts SQL sont embarqués via `go:embed` dans `internal/repository/migration/migrations/`, organisés par dialecte :
+
+```
+internal/repository/migration/migrations/
+├── sqlite/
+│   ├── 001_initial_schema.up.sql
+│   └── 001_initial_schema.down.sql
+└── postgres/
+    ├── 001_initial_schema.up.sql
+    └── 001_initial_schema.down.sql
+```
 
 | Fichier | Rôle |
 |---------|------|
@@ -122,10 +150,10 @@ Convention :
 - `{version}` : entier sur 3 chiffres, zero-padded (`001`, `002`, …).
 - `{name}` : identifiant snake_case décrivant le changement (`initial_schema`).
 
-Exemple :
+Exemple (structure par dialecte) :
 
 ```
-migrations/
+internal/repository/migration/migrations/sqlite/
 ├── 001_initial_schema.up.sql
 └── 001_initial_schema.down.sql
 ```
@@ -238,7 +266,7 @@ Les migrations peuvent contenir des sections dialect-specific si nécessaire ; �
 
 | Méthode | Route      | Description              |
 |---------|------------|--------------------------|
-| GET     | `/healthz` | État de santé du serveur |
+| GET     | `/healthz` | État de santé du serveur (inclut un ping base de données) |
 
 Réponse `GET /healthz` :
 
