@@ -83,86 +83,95 @@ func (s *SubnetService) Create(ctx context.Context, input CreateSubnetInput) (*m
 		return nil, err
 	}
 
-	if existing, err := s.subnets.GetByName(ctx, parentCtx.networkUUID, name); err == nil && existing != nil {
-		return nil, userError(ErrSubnetNameTaken, `subnet name %q is already used in this network`, name)
-	} else if err != nil && !errors.Is(err, ErrSubnetNotFound) {
-		return nil, fmt.Errorf("check subnet name: %w", err)
-	}
-
-	siblings, err := s.listSiblingPrefixes(ctx, input.Parent)
-	if err != nil {
-		return nil, err
-	}
-
-	var candidate netip.Prefix
 	address := strings.TrimSpace(input.Address)
-	switch {
-	case address != "":
-		candidate, err = iputil.ParseIPv4Prefix(address, input.Prefix)
-		if err != nil {
-			switch {
-			case errors.Is(err, iputil.ErrInvalidIPv4Address):
-				return nil, userError(ErrInvalidSubnetAddress, `invalid IPv4 address %q`, address)
-			case errors.Is(err, iputil.ErrInvalidPrefix):
-				return nil, userError(ErrInvalidSubnetPrefix, `invalid IPv4 prefix length %d (must be between 1 and 32)`, input.Prefix)
-			default:
-				return nil, fmt.Errorf("parse subnet address: %w", err)
-			}
-		}
-	case input.Parent.Kind == model.ParentKindNetwork:
-		return nil, userError(ErrAddressRequired, "address is required when the parent is a network")
-	case parentCtx.parentPrefix == nil:
-		return nil, fmt.Errorf("missing parent cidr for auto address allocation")
-	default:
-		candidate, err = iputil.FindFreeIPv4Block(*parentCtx.parentPrefix, input.Prefix, siblings)
-		if err != nil {
-			switch {
-			case errors.Is(err, iputil.ErrInvalidPrefix):
-				return nil, userError(ErrInvalidSubnetPrefix, `invalid IPv4 prefix length %d (must be between 1 and 32)`, input.Prefix)
-			case errors.Is(err, iputil.ErrPrefixTooBroad):
-				return nil, userError(ErrPrefixTooBroad, `prefix /%d is less specific than parent prefix /%d`, input.Prefix, parentCtx.parentPrefix.Bits())
-			case errors.Is(err, iputil.ErrNoFreeBlock):
-				return nil, userError(ErrNoFreeAddress, `no free /%d block found in parent CIDR %s`, input.Prefix, parentCtx.parentPrefix.String())
-			default:
-				return nil, fmt.Errorf("find free address: %w", err)
-			}
-		}
-	}
+	description := strings.TrimSpace(input.Description)
 
-	if err := iputil.ValidateIPv4Subnet(candidate, parentCtx.parentPrefix, siblings); err != nil {
-		cidr := iputil.PrefixString(candidate)
+	return s.subnets.CreateAtomically(ctx, input.Parent, func(tx SubnetCreateTx) (*model.Subnet, error) {
+		if existing, err := tx.GetByName(ctx, parentCtx.networkUUID, name); err == nil && existing != nil {
+			return nil, userError(ErrSubnetNameTaken, `subnet name %q is already used in this network`, name)
+		} else if err != nil && !errors.Is(err, ErrSubnetNotFound) {
+			return nil, fmt.Errorf("check subnet name: %w", err)
+		}
+
+		siblings, err := tx.ListSiblings(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list sibling subnets: %w", err)
+		}
+
+		siblingPrefixes, err := subnetsToPrefixes(siblings)
+		if err != nil {
+			return nil, err
+		}
+
+		var candidate netip.Prefix
 		switch {
-		case errors.Is(err, iputil.ErrOverlap):
-			return nil, userError(ErrSubnetOverlap, `subnet %s overlaps with an existing sibling under the same parent`, cidr)
-		case errors.Is(err, iputil.ErrOutsideParent):
-			return nil, userError(ErrAddressOutsideParent, `subnet %s is outside parent CIDR %s`, cidr, parentCtx.parentPrefix.String())
-		case errors.Is(err, iputil.ErrPrefixTooBroad):
-			if parentCtx.parentPrefix != nil {
-				return nil, userError(ErrPrefixTooBroad, `prefix /%d is less specific than parent prefix /%d`, candidate.Bits(), parentCtx.parentPrefix.Bits())
+		case address != "":
+			candidate, err = iputil.ParseIPv4Prefix(address, input.Prefix)
+			if err != nil {
+				switch {
+				case errors.Is(err, iputil.ErrInvalidIPv4Address):
+					return nil, userError(ErrInvalidSubnetAddress, `invalid IPv4 address %q`, address)
+				case errors.Is(err, iputil.ErrInvalidPrefix):
+					return nil, userError(ErrInvalidSubnetPrefix, `invalid IPv4 prefix length %d (must be between 1 and 32)`, input.Prefix)
+				default:
+					return nil, fmt.Errorf("parse subnet address: %w", err)
+				}
 			}
-			return nil, ErrPrefixTooBroad
-		case errors.Is(err, iputil.ErrInvalidPrefix):
-			return nil, userError(ErrInvalidSubnetPrefix, `invalid IPv4 prefix length %d (must be between 1 and 32)`, candidate.Bits())
+		case input.Parent.Kind == model.ParentKindNetwork:
+			return nil, userError(ErrAddressRequired, "address is required when the parent is a network")
+		case parentCtx.parentPrefix == nil:
+			return nil, fmt.Errorf("missing parent cidr for auto address allocation")
 		default:
-			return nil, fmt.Errorf("validate subnet: %w", err)
+			candidate, err = iputil.FindFreeIPv4Block(*parentCtx.parentPrefix, input.Prefix, siblingPrefixes)
+			if err != nil {
+				switch {
+				case errors.Is(err, iputil.ErrInvalidPrefix):
+					return nil, userError(ErrInvalidSubnetPrefix, `invalid IPv4 prefix length %d (must be between 1 and 32)`, input.Prefix)
+				case errors.Is(err, iputil.ErrPrefixTooBroad):
+					return nil, userError(ErrPrefixTooBroad, `prefix /%d is less specific than parent prefix /%d`, input.Prefix, parentCtx.parentPrefix.Bits())
+				case errors.Is(err, iputil.ErrNoFreeBlock):
+					return nil, userError(ErrNoFreeAddress, `no free /%d block found in parent CIDR %s`, input.Prefix, parentCtx.parentPrefix.String())
+				default:
+					return nil, fmt.Errorf("find free address: %w", err)
+				}
+			}
 		}
-	}
 
-	subnet := &model.Subnet{
-		UUID:        uuid.New(),
-		Name:        name,
-		Description: strings.TrimSpace(input.Description),
-		Prefix:      candidate.Bits(),
-		Address:     iputil.PrefixAddress(candidate),
-		Type:        model.AddressTypeIPv4,
-		Parent:      input.Parent,
-	}
+		if err := iputil.ValidateIPv4Subnet(candidate, parentCtx.parentPrefix, siblingPrefixes); err != nil {
+			cidr := iputil.PrefixString(candidate)
+			switch {
+			case errors.Is(err, iputil.ErrOverlap):
+				return nil, userError(ErrSubnetOverlap, `subnet %s overlaps with an existing sibling under the same parent`, cidr)
+			case errors.Is(err, iputil.ErrOutsideParent):
+				return nil, userError(ErrAddressOutsideParent, `subnet %s is outside parent CIDR %s`, cidr, parentCtx.parentPrefix.String())
+			case errors.Is(err, iputil.ErrPrefixTooBroad):
+				if parentCtx.parentPrefix != nil {
+					return nil, userError(ErrPrefixTooBroad, `prefix /%d is less specific than parent prefix /%d`, candidate.Bits(), parentCtx.parentPrefix.Bits())
+				}
+				return nil, ErrPrefixTooBroad
+			case errors.Is(err, iputil.ErrInvalidPrefix):
+				return nil, userError(ErrInvalidSubnetPrefix, `invalid IPv4 prefix length %d (must be between 1 and 32)`, candidate.Bits())
+			default:
+				return nil, fmt.Errorf("validate subnet: %w", err)
+			}
+		}
 
-	if err := s.subnets.Create(ctx, subnet); err != nil {
-		return nil, fmt.Errorf("create subnet: %w", err)
-	}
+		subnet := &model.Subnet{
+			UUID:        uuid.New(),
+			Name:        name,
+			Description: description,
+			Prefix:      candidate.Bits(),
+			Address:     iputil.PrefixAddress(candidate),
+			Type:        model.AddressTypeIPv4,
+			Parent:      input.Parent,
+		}
 
-	return subnet, nil
+		if err := tx.Insert(ctx, subnet); err != nil {
+			return nil, fmt.Errorf("create subnet: %w", err)
+		}
+
+		return subnet, nil
+	})
 }
 
 func (s *SubnetService) ListByNetwork(ctx context.Context, networkUUID uuid.UUID) ([]*model.Subnet, error) {
@@ -372,18 +381,13 @@ func (s *SubnetService) resolveNetworkUUID(ctx context.Context, subnet *model.Su
 	return s.resolveNetworkUUID(ctx, parentSubnet)
 }
 
-func (s *SubnetService) listSiblingPrefixes(ctx context.Context, parent model.Parent) ([]netip.Prefix, error) {
-	siblings, err := s.subnets.ListByParent(ctx, parent)
-	if err != nil {
-		return nil, fmt.Errorf("list sibling subnets: %w", err)
-	}
-
-	prefixes := make([]netip.Prefix, 0, len(siblings))
-	for _, sibling := range siblings {
-		if sibling.Type != model.AddressTypeIPv4 {
+func subnetsToPrefixes(subnets []*model.Subnet) ([]netip.Prefix, error) {
+	prefixes := make([]netip.Prefix, 0, len(subnets))
+	for _, subnet := range subnets {
+		if subnet.Type != model.AddressTypeIPv4 {
 			continue
 		}
-		prefix, err := iputil.ParseIPv4Prefix(sibling.Address, sibling.Prefix)
+		prefix, err := iputil.ParseIPv4Prefix(subnet.Address, subnet.Prefix)
 		if err != nil {
 			return nil, fmt.Errorf("parse sibling cidr: %w", err)
 		}

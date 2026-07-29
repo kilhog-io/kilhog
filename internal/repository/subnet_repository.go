@@ -21,41 +21,125 @@ func NewSubnetRepository(store *db.Store) *SubnetRepository {
 	return &SubnetRepository{store: store}
 }
 
+var (
+	ErrParentNotFound = service.ErrParentNotFound
+)
+
+type subnetCreateTx struct {
+	repo   *SubnetRepository
+	q      db.Querier
+	parent model.Parent
+}
+
+func (t *subnetCreateTx) ListSiblings(ctx context.Context) ([]*model.Subnet, error) {
+	return t.repo.listByParent(ctx, t.q, t.parent)
+}
+
+func (t *subnetCreateTx) GetByName(ctx context.Context, networkID uuid.UUID, name string) (*model.Subnet, error) {
+	return t.repo.getByName(ctx, t.q, networkID, name)
+}
+
+func (t *subnetCreateTx) Insert(ctx context.Context, subnet *model.Subnet) error {
+	return t.repo.insertSubnet(ctx, t.q, subnet)
+}
+
+var _ service.SubnetCreateTx = (*subnetCreateTx)(nil)
 var _ service.SubnetRepository = (*SubnetRepository)(nil)
 
 func (r *SubnetRepository) Create(ctx context.Context, subnet *model.Subnet) error {
 	return r.store.WithWriteTx(ctx, func(q db.Querier) error {
-		networkUUID, err := r.resolveNetworkUUID(ctx, q, subnet)
+		return r.insertSubnet(ctx, q, subnet)
+	})
+}
+
+func (r *SubnetRepository) CreateAtomically(ctx context.Context, parent model.Parent, fn func(service.SubnetCreateTx) (*model.Subnet, error)) (*model.Subnet, error) {
+	var created *model.Subnet
+	err := r.store.WithWriteTx(ctx, func(q db.Querier) error {
+		if err := r.lockParentForCreate(ctx, q, parent); err != nil {
+			return err
+		}
+
+		subnet, err := fn(&subnetCreateTx{
+			repo:   r,
+			q:      q,
+			parent: parent,
+		})
 		if err != nil {
 			return err
 		}
 
-		query := fmt.Sprintf(`
-			INSERT INTO subnets (
-				uuid, network_uuid, name, description, prefix, address,
-				address_type, parent_kind, parent_uuid, created_at, updated_at
-			) VALUES (%s)
-		`, placeholders(r.store.Dialect, 11))
-
-		now := time.Now().UTC()
-		if _, err := q.ExecContext(ctx, query,
-			uuidString(r.store.Dialect, subnet.UUID),
-			uuidString(r.store.Dialect, networkUUID),
-			subnet.Name,
-			nullString(subnet.Description),
-			subnet.Prefix,
-			subnet.Address,
-			string(subnet.Type),
-			string(subnet.Parent.Kind),
-			uuidString(r.store.Dialect, subnet.Parent.UUID),
-			now,
-			now,
-		); err != nil {
-			return fmt.Errorf("insert subnet: %w", err)
-		}
-
-		return replaceTags(ctx, q, r.store.Dialect, model.ParentKindSubnet, subnet.UUID, subnet.Tags)
+		created = subnet
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (r *SubnetRepository) insertSubnet(ctx context.Context, q db.Querier, subnet *model.Subnet) error {
+	networkUUID, err := r.resolveNetworkUUID(ctx, q, subnet)
+	if err != nil {
+		return err
+	}
+
+	query := fmt.Sprintf(`
+		INSERT INTO subnets (
+			uuid, network_uuid, name, description, prefix, address,
+			address_type, parent_kind, parent_uuid, created_at, updated_at
+		) VALUES (%s)
+	`, placeholders(r.store.Dialect, 11))
+
+	now := time.Now().UTC()
+	if _, err := q.ExecContext(ctx, query,
+		uuidString(r.store.Dialect, subnet.UUID),
+		uuidString(r.store.Dialect, networkUUID),
+		subnet.Name,
+		nullString(subnet.Description),
+		subnet.Prefix,
+		subnet.Address,
+		string(subnet.Type),
+		string(subnet.Parent.Kind),
+		uuidString(r.store.Dialect, subnet.Parent.UUID),
+		now,
+		now,
+	); err != nil {
+		return fmt.Errorf("insert subnet: %w", err)
+	}
+
+	return replaceTags(ctx, q, r.store.Dialect, model.ParentKindSubnet, subnet.UUID, subnet.Tags)
+}
+
+func (r *SubnetRepository) lockParentForCreate(ctx context.Context, q db.Querier, parent model.Parent) error {
+	var query string
+	var arg any
+
+	switch parent.Kind {
+	case model.ParentKindNetwork:
+		query = fmt.Sprintf(`SELECT uuid FROM networks WHERE uuid = %s`, placeholder(r.store.Dialect, 1))
+		arg = uuidString(r.store.Dialect, parent.UUID)
+	case model.ParentKindSubnet:
+		query = fmt.Sprintf(`SELECT uuid FROM subnets WHERE uuid = %s`, placeholder(r.store.Dialect, 1))
+		arg = uuidString(r.store.Dialect, parent.UUID)
+	default:
+		return fmt.Errorf("unsupported parent kind %q", parent.Kind)
+	}
+
+	if r.store.Dialect == db.DialectPostgres {
+		query += " FOR UPDATE"
+	}
+
+	var rawUUID any
+	err := q.QueryRowContext(ctx, query, arg).Scan(&rawUUID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrParentNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("lock parent for subnet create: %w", err)
+	}
+
+	return nil
 }
 
 func (r *SubnetRepository) GetByUUID(ctx context.Context, id uuid.UUID) (*model.Subnet, error) {
@@ -83,6 +167,10 @@ func (r *SubnetRepository) GetByUUID(ctx context.Context, id uuid.UUID) (*model.
 }
 
 func (r *SubnetRepository) GetByName(ctx context.Context, networkID uuid.UUID, name string) (*model.Subnet, error) {
+	return r.getByName(ctx, r.store.DB, networkID, name)
+}
+
+func (r *SubnetRepository) getByName(ctx context.Context, q db.Querier, networkID uuid.UUID, name string) (*model.Subnet, error) {
 	query := fmt.Sprintf(`
 		SELECT uuid, name, description, prefix, address, address_type, parent_kind, parent_uuid
 		FROM subnets
@@ -91,7 +179,7 @@ func (r *SubnetRepository) GetByName(ctx context.Context, networkID uuid.UUID, n
 
 	subnet, err := scanSubnetRow(
 		r.store.Dialect,
-		r.store.DB.QueryRowContext(ctx, query, uuidString(r.store.Dialect, networkID), name),
+		q.QueryRowContext(ctx, query, uuidString(r.store.Dialect, networkID), name),
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrSubnetNotFound
@@ -100,7 +188,7 @@ func (r *SubnetRepository) GetByName(ctx context.Context, networkID uuid.UUID, n
 		return nil, fmt.Errorf("query subnet by name: %w", err)
 	}
 
-	tags, err := loadTags(ctx, r.store.DB, r.store.Dialect, model.ParentKindSubnet, subnet.UUID)
+	tags, err := loadTags(ctx, q, r.store.Dialect, model.ParentKindSubnet, subnet.UUID)
 	if err != nil {
 		return nil, err
 	}
@@ -201,10 +289,14 @@ func (r *SubnetRepository) ListByNetwork(ctx context.Context, networkID uuid.UUI
 		ORDER BY name
 	`, placeholder(r.store.Dialect, 1))
 
-	return r.listSubnets(ctx, query, uuidString(r.store.Dialect, networkID))
+	return r.listSubnets(ctx, r.store.DB, query, uuidString(r.store.Dialect, networkID))
 }
 
 func (r *SubnetRepository) ListByParent(ctx context.Context, parent model.Parent) ([]*model.Subnet, error) {
+	return r.listByParent(ctx, r.store.DB, parent)
+}
+
+func (r *SubnetRepository) listByParent(ctx context.Context, q db.Querier, parent model.Parent) ([]*model.Subnet, error) {
 	query := fmt.Sprintf(`
 		SELECT uuid, name, description, prefix, address, address_type, parent_kind, parent_uuid
 		FROM subnets
@@ -212,11 +304,11 @@ func (r *SubnetRepository) ListByParent(ctx context.Context, parent model.Parent
 		ORDER BY name
 	`, placeholder(r.store.Dialect, 1), placeholder(r.store.Dialect, 2))
 
-	return r.listSubnets(ctx, query, string(parent.Kind), uuidString(r.store.Dialect, parent.UUID))
+	return r.listSubnets(ctx, q, query, string(parent.Kind), uuidString(r.store.Dialect, parent.UUID))
 }
 
-func (r *SubnetRepository) listSubnets(ctx context.Context, query string, args ...any) ([]*model.Subnet, error) {
-	rows, err := r.store.DB.QueryContext(ctx, query, args...)
+func (r *SubnetRepository) listSubnets(ctx context.Context, q db.Querier, query string, args ...any) ([]*model.Subnet, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list subnets: %w", err)
 	}
@@ -236,7 +328,7 @@ func (r *SubnetRepository) listSubnets(ctx context.Context, query string, args .
 		return nil, fmt.Errorf("iterate subnets: %w", err)
 	}
 
-	tagMap, err := loadTagsForResources(ctx, r.store.DB, r.store.Dialect, model.ParentKindSubnet, ids)
+	tagMap, err := loadTagsForResources(ctx, q, r.store.Dialect, model.ParentKindSubnet, ids)
 	if err != nil {
 		return nil, err
 	}

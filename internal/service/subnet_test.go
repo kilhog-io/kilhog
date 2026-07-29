@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/kilhog-io/kilhog/internal/model"
@@ -302,6 +303,70 @@ func TestSubnetService_UpdateAndDelete(t *testing.T) {
 	}
 	if err := svc.Delete(ctx, subnet.UUID); err != nil {
 		t.Fatalf("Delete parent: %v", err)
+	}
+}
+
+func TestSubnetService_CreateConcurrentAutoAddress(t *testing.T) {
+	svc, repos := openSubnetServiceWithRepos(t)
+	ctx := context.Background()
+
+	net, err := service.NewNetworkService(repos.Networks, repos.Subnets).Create(ctx, service.CreateNetworkInput{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create network: %v", err)
+	}
+
+	parent, err := svc.Create(ctx, service.CreateSubnetInput{
+		Name:    "class-a",
+		Prefix:  8,
+		Address: "10.0.0.0",
+		Parent:  model.Parent{Kind: model.ParentKindNetwork, UUID: net.UUID},
+	})
+	if err != nil {
+		t.Fatalf("Create parent: %v", err)
+	}
+
+	type childSpec struct {
+		name   string
+		prefix int
+	}
+
+	specs := []childSpec{
+		{name: "database", prefix: 24},
+		{name: "kubernetes", prefix: 24},
+		{name: "proxies", prefix: 26},
+		{name: "gce", prefix: 24},
+	}
+
+	results := make([]*model.Subnet, len(specs))
+	errs := make([]error, len(specs))
+
+	var wg sync.WaitGroup
+	for i, spec := range specs {
+		wg.Add(1)
+		go func(i int, spec childSpec) {
+			defer wg.Done()
+			results[i], errs[i] = svc.Create(ctx, service.CreateSubnetInput{
+				Name:   spec.name,
+				Prefix: spec.prefix,
+				Parent: model.Parent{Kind: model.ParentKindSubnet, UUID: parent.UUID},
+			})
+		}(i, spec)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("Create %q: %v", specs[i].name, err)
+		}
+	}
+
+	seen := make(map[string]string, len(results))
+	for _, subnet := range results {
+		cidr := subnet.CIDR()
+		if other, ok := seen[cidr]; ok {
+			t.Fatalf("duplicate CIDR %s assigned to %q and %q", cidr, other, subnet.Name)
+		}
+		seen[cidr] = subnet.Name
 	}
 }
 

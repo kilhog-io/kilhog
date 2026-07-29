@@ -127,6 +127,8 @@ API calls may arrive in parallel. The `db.Store` layer provides:
 
 Mutations (`Create`, `Update`, `Delete`) go through `WithWriteTx`: SQLite write lock + SQL transaction. Reads (`Get*`, `List*`) use the pool directly.
 
+Subnet creation with auto-allocated addresses uses `SubnetRepository.CreateAtomically`: sibling listing, overlap validation, and insert run in the same write transaction. The parent row is locked (`SELECT … FOR UPDATE` on PostgreSQL; SQLite relies on the application write mutex) so parallel creates under the same parent cannot pick the same CIDR.
+
 On PostgreSQL, the SQLite application lock is disabled: concurrency is handled by MVCC and SQL transactions.
 
 ### Connection and database creation
