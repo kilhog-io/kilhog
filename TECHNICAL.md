@@ -11,7 +11,11 @@
 ```
 kilhog/
 ├── cmd/
-│   └── kilhog/          # Application entry point (main.go)
+│   ├── kilhog/          # API server entry point (main.go)
+│   └── pogig/           # CLI entry point (Breton for "chick")
+│       └── internal/cmd/ # Cobra commands (network, subnet, health)
+├── pkg/
+│   └── kilhog/          # Public Go SDK for the REST API (shared by pogig and external consumers)
 ├── internal/
 │   ├── handler/         # HTTP handlers and request validation
 │   ├── service/         # Business logic and repository interfaces
@@ -268,6 +272,7 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 | Module | Usage |
 |--------|-------|
 | `github.com/google/uuid` | Resource `UUID` identifiers |
+| `github.com/spf13/cobra` | pogig CLI command tree |
 | `database/sql` | Standard Go SQL abstraction |
 | `modernc.org/sqlite` | SQLite driver (pure Go) |
 | `jackc/pgx/v5` | PostgreSQL driver |
@@ -716,10 +721,126 @@ Example — CIDR overlap:
 ## Build
 
 ```bash
-make build
+make build        # API server binary in bin/kilhog
+make build-pogig  # CLI binary in bin/pogig
+make build-all    # both binaries
 ```
 
-Compiles the binary to `bin/kilhog` from `./cmd/kilhog`.
+Compiles the API server from `./cmd/kilhog` and the CLI from `./cmd/pogig`.
+
+## Go SDK (`pkg/kilhog`)
+
+The public Go SDK wraps the kilhog REST API. It is consumed by **pogig** and is designed for reuse by external Go projects, including the **Terraform provider** (maintained in a separate Git repository).
+
+### Layout
+
+```
+pkg/kilhog/
+├── client.go   # HTTP client, request envelope handling, configuration
+├── types.go    # API data types (Network, Subnet, Tag, …)
+├── error.go    # APIError for non-success responses
+├── health.go   # GET /healthz
+├── network.go  # Network CRUD
+└── subnet.go   # Subnet CRUD (network-scoped routes)
+```
+
+### Client configuration
+
+| Field / env var | Default | Description |
+|-----------------|---------|-------------|
+| `ClientConfig.BaseURL` / `KILHOG_BASE_URL` | `http://localhost:8080` | API base URL |
+| `ClientConfig.APIKey` / `KILHOG_API_KEY` | *(empty)* | Bearer token for protected routes |
+| `ClientConfig.HTTPClient` | 30 s timeout | Custom `*http.Client` (optional) |
+
+Construct a client explicitly or from the environment:
+
+```go
+client, err := kilhog.NewClient(kilhog.ClientConfig{
+    BaseURL: "http://localhost:8080",
+    APIKey:  "secret",
+})
+
+// or
+
+client, err := kilhog.NewClientFromEnv()
+```
+
+### SDK methods (mirror of REST routes)
+
+| Method | HTTP route |
+|--------|------------|
+| `Health` | `GET /healthz` |
+| `ListNetworks`, `GetNetwork`, `CreateNetwork`, `UpdateNetwork`, `DeleteNetwork` | `/networks` … |
+| `ListSubnets`, `GetSubnet`, `CreateSubnetInNetwork`, `UpdateSubnet`, `DeleteSubnet` | `/networks/{uuid}/subnets` … |
+| `CreateSubnetUnderParent`, `ListChildSubnets` | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` … |
+
+Errors from the API are returned as `*kilhog.APIError` with the HTTP status code and server message.
+
+### Terraform provider (external project)
+
+The Terraform provider is **not** part of this repository. It lives in a separate Git project and should depend on this module:
+
+```go
+import "github.com/kilhog-io/kilhog/pkg/kilhog"
+```
+
+Provider configuration maps to `kilhog.ClientConfig`:
+
+| Terraform provider attribute | SDK field / env var |
+|------------------------------|---------------------|
+| `base_url` | `ClientConfig.BaseURL` / `KILHOG_BASE_URL` |
+| `api_key` | `ClientConfig.APIKey` / `KILHOG_API_KEY` |
+
+Resource implementations call the same SDK methods as pogig (create/read/update/delete networks and subnets).
+
+## CLI — pogig (`cmd/pogig`)
+
+**pogig** (*chick* in Breton) is the command-line client for kilhog. It uses the shared SDK (`pkg/kilhog`) instead of calling the REST API directly.
+
+### Configuration
+
+Same variables and flags as the SDK:
+
+| Flag | Env var | Default |
+|------|---------|---------|
+| `--base-url` | `KILHOG_BASE_URL` | `http://localhost:8080` |
+| `--api-key` | `KILHOG_API_KEY` | *(empty)* |
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `pogig health` | Check server health (`GET /healthz`) |
+| `pogig network list` | List all networks |
+| `pogig network get <uuid>` | Get a network |
+| `pogig network create --name … [--description …]` | Create a network |
+| `pogig network update <uuid> --name … [--description …]` | Update a network |
+| `pogig network delete <uuid>` | Delete a network |
+| `pogig subnet list --network <uuid>` | List subnets in a network |
+| `pogig subnet get <subnet-uuid> --network <uuid>` | Get a subnet |
+| `pogig subnet create --network <uuid> --name … --prefix … [--address …] [--parent-subnet …]` | Create a subnet |
+| `pogig subnet update <subnet-uuid> --network <uuid> --description …` | Update a subnet description |
+| `pogig subnet delete <subnet-uuid> --network <uuid>` | Delete a subnet |
+
+Successful reads and writes print JSON to stdout.
+
+### Examples
+
+```bash
+make build-pogig
+
+# Server must be running (make run-dev)
+./bin/pogig health
+./bin/pogig network list
+./bin/pogig network create --name lab --description "Lab network"
+./bin/pogig subnet list --network 550e8400-e29b-41d4-a716-446655440000
+```
+
+With API key authentication:
+
+```bash
+KILHOG_API_KEY=dev-secret ./bin/pogig network list
+```
 
 ## Run
 
