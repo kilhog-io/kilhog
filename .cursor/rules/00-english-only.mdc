@@ -1,0 +1,16 @@
+---
+description: English-only language requirement for rules and documentation
+globs: "*"
+alwaysApply: true
+---
+
+# ENGLISH-ONLY DOCUMENTATION
+
+- All Cursor rules (`.cursor/rules/*.mdc`) MUST be written in English.
+- All Markdown documentation MUST be written in English, including but not limited to:
+  - `README.md`
+  - `TECHNICAL.md`
+  - `FUNCTIONAL.md`
+  - Any other `.md` file in the repository.
+- When creating or updating rules or documentation, use clear, professional English.
+- Do not write new rules or Markdown docs in French or any other language unless the user explicitly requests otherwise.

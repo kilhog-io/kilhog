@@ -1,8 +1,8 @@
 ---
-description: Ne pas fetcher le projet originel
+description: Do not fetch the original project
 globs: "*"
 alwaysApply: true
 ---
 
-- Ne fetch jamais le projet github https://github.com/kilhog-io/kilhog
-- Ne t'inspire pas de ce projet, il est voué à disparaitre.
+- Never fetch the GitHub project https://github.com/kilhog-io/kilhog
+- Do not use that project as inspiration; it is slated for deprecation.

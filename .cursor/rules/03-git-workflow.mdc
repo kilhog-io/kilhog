@@ -1,28 +1,28 @@
 ---
-description: Règle de gestion du contrôle de version Git et de la traçabilité
+description: Git version control and traceability workflow rules
 globs: "*"
 alwaysApply: true
 ---
 
-# TRAÇABILITÉ ET WORKFLOW GIT
+# TRACEABILITY AND GIT WORKFLOW
 
-## 1. Fréquence et Atomicité
-- Propose un commit Git **après chaque tâche achevée et fonctionnelle** (une fonctionnalité ajoutée, un bug corrigé ou une refactorisation).
-- Ne cumule pas plusieurs fonctionnalités indépendantes dans un seul commit.
+## 1. Frequency and Atomicity
+- Propose a Git commit **after each completed and functional task** (a feature added, a bug fixed, or a refactor).
+- Do not combine multiple independent features in a single commit.
 
-## 2. Vérifications Pré-Commit
-Avant de proposer ou d'exécuter un commit, tu DOIS vérifier :
-1. Le code fonctionne sans erreur critique ou erreur de syntaxe.
-2. Le fichier `TECHNICAL.md` a été mis à jour si la modification impacte l'architecture, une route ou la structure des données.
+## 2. Pre-Commit Checks
+Before proposing or executing a commit, you MUST verify:
+1. The code runs without critical or syntax errors.
+2. The `TECHNICAL.md` file has been updated if the change impacts architecture, a route, or data structure.
 
-## 3. Format des Messages de Commit
-Utilise la convention **Conventional Commits** en anglais pour des messages clairs :
-- `feat:` pour une nouvelle fonctionnalité métier (ex: `feat: ajout de la validation par clé API`)
-- `fix:` pour la correction d'un bug (ex: `fix: résolution du crash au démarrage du serveur`)
-- `docs:` pour la mise à jour de la documentation (ex: `docs: mise à jour de TECHNICAL.md avec les nouvelles routes`)
-- `refactor:` pour une réorganisation du code sans changement de fonctionnalité
+## 3. Commit Message Format
+Use the **Conventional Commits** convention in English for clear messages:
+- `feat:` for a new business feature (e.g. `feat: add API key validation`)
+- `fix:` for a bug fix (e.g. `fix: resolve server startup crash`)
+- `docs:` for documentation updates (e.g. `docs: update TECHNICAL.md with new routes`)
+- `refactor:` for code reorganization without functional changes
 
-## 4. Interaction avec l'Utilisateur
-- À la fin de ton intervention, affiche le message de commit suggéré.
-- Si tu as accès au terminal, exécute le commit ou donne la commande exacte à l'utilisateur :
-  `git add . && git commit -m "type: description claire"`
+## 4. User Interaction
+- At the end of your work, display the suggested commit message.
+- If you have terminal access, execute the commit or provide the exact command to the user:
+  `git add . && git commit -m "type: clear description"`

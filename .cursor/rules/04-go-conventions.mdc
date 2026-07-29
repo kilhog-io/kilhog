@@ -1,24 +1,24 @@
 ---
-description: Normes de développement et architecture pour le projet kilhog
+description: Development standards and architecture for the kilhog project
 globs: "*.go"
 alwaysApply: true
 ---
 
-# CONVENTIONS ET ARCHITECTURE GO
+# GO CONVENTIONS AND ARCHITECTURE
 
-## 1. Structure du projet (Standard Go Layout)
-- Le point d'entrée doit se trouver dans `cmd/kilhog/main.go`.
-- Le code métier, les handlers et les modèles DOIVENT être sous le dossier `internal/`.
-- Découpage strict par couches :
-  - `internal/handler/` : Réception des requêtes HTTP et validation des données.
-  - `internal/service/` : Logique métier pure (indépendante du HTTP).
-  - `internal/repository/` : Accès aux données / Base de données.
+## 1. Project Structure (Standard Go Layout)
+- The entry point must be located in `cmd/kilhog/main.go`.
+- Business logic, handlers, and models MUST be under the `internal/` folder.
+- Strict layering:
+  - `internal/handler/` : HTTP request handling and data validation.
+  - `internal/service/` : Pure business logic (HTTP-independent).
+  - `internal/repository/` : Data access / Database.
 
-## 2. Gestion des erreurs (Go Idiomatique)
-- N'utilise JAMAIS `panic()` dans le code applicatif ou les handlers.
-- Traite chaque erreur explicitement avec `if err != nil`.
-- Enveloppe le contexte des erreurs avec `fmt.Errorf("action échouée: %w", err)`.
+## 2. Error Handling (Go Idiomatic)
+- NEVER use `panic()` in application code or handlers.
+- Handle every error explicitly with `if err != nil`.
+- Wrap error context with `fmt.Errorf("action failed: %w", err)`.
 
-## 3. Interfaces et Injection de dépendances
-- Définis les interfaces **là où elles sont consommées** (ex: le service définit l'interface du repository dont il a besoin).
-- Utilise l'injection de dépendances par les constructeurs (fonctions `New...`).
+## 3. Interfaces and Dependency Injection
+- Define interfaces **where they are consumed** (e.g. the service defines the repository interface it needs).
+- Use dependency injection via constructors (`New...` functions).

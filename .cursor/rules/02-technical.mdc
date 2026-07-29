@@ -1,8 +1,8 @@
 ---
-description: Maintien à jour de l'architecture technique et du code
+description: Keeping technical architecture and code documentation up to date
 globs: "*"
 alwaysApply: true
 ---
 
-- Le fichier `TECHNICAL.md` contient l'architecture, la stack et les routes API.
-- À chaque création, modification ou suppression de code/fichier, tu DOIS obligatoirement mettre à jour `TECHNICAL.md`.
+- The `TECHNICAL.md` file contains the architecture, stack, and API routes.
+- On every code/file creation, modification, or deletion, you MUST update `TECHNICAL.md`.
