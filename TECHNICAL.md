@@ -856,8 +856,18 @@ Builds and runs the application with SQLite:
 - **File**: `kilhog.db` at the project root (created automatically on first startup)
 - **Migrations**: applied automatically (`KILHOG_AUTO_MIGRATE=true` by default)
 - **Listen**: `http://0.0.0.0:8080`
+- **API key**: `dev-secret` by default (`KILHOG_API_KEY` in the Makefile); disable with `make run-dev KILHOG_API_KEY=`
 
 The `kilhog.db` file (and SQLite auxiliary files `kilhog.db-wal`, `kilhog.db-shm`) is ignored by Git (see `.gitignore`).
+
+### Makefile API key defaults
+
+| Make variable | Default | Used by |
+|---------------|---------|---------|
+| `KILHOG_API_KEY` | `dev-secret` | `run-dev`, `dev-*` script targets |
+| `KILHOG_BASE_URL` | `http://localhost:8080` | `dev-*` script targets |
+
+Override on the command line, for example `make dev-create-networks KILHOG_API_KEY=other-secret`. When calling **pogig** directly, export the same key: `KILHOG_API_KEY=dev-secret ./bin/pogig network list`.
 
 ### Direct run
 
@@ -876,9 +886,9 @@ The `scripts/dev/` folder contains standalone Bash scripts that call the REST AP
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `KILHOG_BASE_URL` | `http://localhost:8080` | API base URL |
-| `KILHOG_API_KEY` | *(empty)* | API key sent as `Authorization: Bearer …` when set |
+| `KILHOG_API_KEY` | `dev-secret` (via Makefile) | API key sent as `Authorization: Bearer …`; empty disables auth on `run-dev` |
 
-When the server runs with `KILHOG_API_KEY` set, export the same value before calling the dev scripts (or pass it inline: `KILHOG_API_KEY=secret make dev-create-networks`).
+Make targets `run-dev` and `dev-*` inject these values automatically. Override with `make … KILHOG_API_KEY=other-secret` or disable auth with `make run-dev KILHOG_API_KEY=`.
 
 | Script | JSON file(s) | Make target | Action |
 |--------|--------------|-------------|--------|

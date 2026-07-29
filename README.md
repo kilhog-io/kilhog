@@ -38,24 +38,23 @@ make build-pogig
 ./bin/pogig health
 make dev-create-networks
 make dev-create-subnets
-./bin/pogig network list
+KILHOG_API_KEY=dev-secret ./bin/pogig network list
 ```
+
+`make run-dev` enables API key auth with the default key `dev-secret`. Dev script targets pass the same key automatically. Disable auth with `make run-dev KILHOG_API_KEY=`.
 
 Check that the API responds:
 
 ```bash
 curl http://localhost:8080/healthz
-```
-
-To enable API key protection, set `KILHOG_API_KEY` when starting the server and pass the same key on protected routes:
-
-```bash
-KILHOG_API_KEY=dev-secret make run-dev
-
 curl -H "Authorization: Bearer dev-secret" http://localhost:8080/networks
 ```
 
-`GET /healthz` stays public so load balancers and orchestrators can probe without credentials.
+`GET /healthz` stays public so load balancers and orchestrators can probe without credentials. Override the dev key on any Make target:
+
+```bash
+make run-dev KILHOG_API_KEY=my-secret
+```
 
 ## Build
 
