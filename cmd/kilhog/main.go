@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,29 +11,37 @@ import (
 	"time"
 
 	"github.com/kilhog-io/kilhog/internal/handler"
+	kilhoglog "github.com/kilhog-io/kilhog/internal/log"
 	"github.com/kilhog-io/kilhog/internal/repository"
 	"github.com/kilhog-io/kilhog/internal/repository/db"
 	"github.com/kilhog-io/kilhog/internal/service"
 )
 
 func main() {
+	if _, err := kilhoglog.InitFromEnv(); err != nil {
+		slog.Error("invalid log configuration", "error", err)
+		os.Exit(1)
+	}
+
 	host := envOrDefault("KILHOG_HOST", "0.0.0.0")
 	port := envOrDefault("KILHOG_PORT", "8080")
 	addr := fmt.Sprintf("%s:%s", host, port)
 
 	cfg, err := db.ConfigFromEnv()
 	if err != nil {
-		log.Fatalf("database config failed: %v", err)
+		slog.Error("database config failed", "error", err)
+		os.Exit(1)
 	}
 
 	ctx := context.Background()
 	repos, err := repository.Open(ctx, cfg)
 	if err != nil {
-		log.Fatalf("database init failed: %v", err)
+		slog.Error("database init failed", "error", err)
+		os.Exit(1)
 	}
 	defer func() {
 		if err := repos.Close(); err != nil {
-			log.Printf("database close failed: %v", err)
+			slog.Warn("database close failed", "error", err)
 		}
 	}()
 
@@ -50,14 +58,15 @@ func main() {
 	}
 
 	if apiKey != "" {
-		log.Printf("kilhog listening on %s (db=%s, api_key=enabled)", addr, cfg.Driver)
+		slog.Info("kilhog listening", "addr", addr, "db", cfg.Driver, "api_key", "enabled")
 	} else {
-		log.Printf("kilhog listening on %s (db=%s, api_key=disabled)", addr, cfg.Driver)
+		slog.Info("kilhog listening", "addr", addr, "db", cfg.Driver, "api_key", "disabled")
 	}
 
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server failed: %v", err)
+			slog.Error("server failed", "error", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -65,11 +74,14 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 
+	slog.Info("shutting down")
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("server shutdown failed: %v", err)
+		slog.Error("server shutdown failed", "error", err)
+		os.Exit(1)
 	}
 }
 

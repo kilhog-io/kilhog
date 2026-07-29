@@ -18,6 +18,7 @@ kilhog/
 │   └── kilhog/          # Public Go SDK for the REST API (shared by pogig and external consumers)
 ├── internal/
 │   ├── handler/         # HTTP handlers and request validation
+│   ├── log/             # Structured logging (slog) and HTTP request middleware
 │   ├── service/         # Business logic and repository interfaces
 │   ├── repository/      # Data access, migrations, SQL drivers
 │   │   ├── migration/   # Versioned migration runner (upgrade / downgrade)
@@ -679,10 +680,25 @@ Errors:
 |--------------------|---------------------|-------------|
 | `KILHOG_HOST`      | `0.0.0.0`           | HTTP listen address |
 | `KILHOG_PORT`      | `8080`              | HTTP listen port |
+| `KILHOG_LOG_LEVEL` | `info`              | Log level: `debug`, `info`, `warn`, `error`, or `off` |
 | `KILHOG_API_KEY`   | *(empty)*           | API key for protected routes; auth disabled when unset |
 | `KILHOG_DB_DRIVER` | `sqlite`            | Database driver: `sqlite` or `postgres` |
 | `KILHOG_DB_DSN`    | `file:kilhog.db`    | Connection DSN (see examples below) |
 | `KILHOG_AUTO_MIGRATE` | `true`           | Apply upgrade migrations at startup |
+
+### Logging
+
+Logging uses the standard library `log/slog` with a text handler on stderr. Configure verbosity with `KILHOG_LOG_LEVEL`.
+
+| Level   | HTTP requests | Other events |
+|---------|---------------|--------------|
+| `debug` | Method, path, status, duration, headers (API key redacted), request body, response body | Migration details, startup/shutdown |
+| `info`  | Method, path, status, duration (one line per request) | Startup, migrations applied, shutdown |
+| `warn`  | — | Warnings (e.g. database close failure) |
+| `error` | — | Fatal configuration or runtime errors |
+| `off`   | — | No logs |
+
+Every HTTP request passes through `internal/log.HTTPMiddleware` (wired in `handler.NewRouter`). `Authorization` and `X-API-Key` header values are never logged.
 
 ### DSN examples
 

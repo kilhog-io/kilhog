@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 
+	kilhoglog "github.com/kilhog-io/kilhog/internal/log"
 	"github.com/kilhog-io/kilhog/internal/repository/db"
 	"github.com/kilhog-io/kilhog/internal/service"
 )
@@ -32,7 +33,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	}
 	mux.Handle("/", protectedHandler)
 
-	return mux
+	return kilhoglog.HTTPMiddleware(mux)
 }
 
 func healthHandler(store *db.Store) http.HandlerFunc {

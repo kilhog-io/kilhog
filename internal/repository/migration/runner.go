@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/kilhog-io/kilhog/internal/repository/db"
@@ -41,9 +42,11 @@ func (r *Runner) Upgrade(ctx context.Context) error {
 			continue
 		}
 
+		slog.Debug("applying migration", "version", script.Version, "name", script.Name)
 		if err := r.apply(ctx, script); err != nil {
 			return fmt.Errorf("apply migration %03d_%s: %w", script.Version, script.Name, err)
 		}
+		slog.Info("applied migration", "version", script.Version, "name", script.Name)
 	}
 
 	return nil
