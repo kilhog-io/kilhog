@@ -11,17 +11,27 @@ type Dependencies struct {
 	Store          *db.Store
 	NetworkService *service.NetworkService
 	SubnetService  *service.SubnetService
+	APIKey         string
 }
 
 func NewRouter(deps Dependencies) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler(deps.Store))
+
+	protected := http.NewServeMux()
 	if deps.NetworkService != nil {
-		registerNetworkRoutes(mux, deps.NetworkService)
+		registerNetworkRoutes(protected, deps.NetworkService)
 	}
 	if deps.SubnetService != nil {
-		registerSubnetRoutes(mux, deps.SubnetService)
+		registerSubnetRoutes(protected, deps.SubnetService)
 	}
+
+	protectedHandler := http.Handler(protected)
+	if deps.APIKey != "" {
+		protectedHandler = apiKeyMiddleware(deps.APIKey, protected)
+	}
+	mux.Handle("/", protectedHandler)
+
 	return mux
 }
 

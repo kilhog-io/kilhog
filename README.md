@@ -14,7 +14,8 @@ Its name comes from an English–French–Breton word chain: *pool* → *poule* 
 - Hierarchical IPv4 **subnet** management (CIDR blocks and host addresses)
 - CIDR validation: parent containment, overlap detection, automatic address allocation
 - **SQLite** or **PostgreSQL** persistence with versioned migrations
-- JSON REST API, ready for multi-tenancy and RBAC
+- JSON REST API with optional API key authentication
+- Ready for multi-tenancy and RBAC
 
 ## Documentation
 
@@ -39,6 +40,16 @@ Check that the API responds:
 ```bash
 curl http://localhost:8080/healthz
 ```
+
+To enable API key protection, set `KILHOG_API_KEY` when starting the server and pass the same key on protected routes:
+
+```bash
+KILHOG_API_KEY=dev-secret make run-dev
+
+curl -H "Authorization: Bearer dev-secret" http://localhost:8080/networks
+```
+
+`GET /healthz` stays public so load balancers and orchestrators can probe without credentials.
 
 ## Build
 

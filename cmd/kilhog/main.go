@@ -37,16 +37,23 @@ func main() {
 		}
 	}()
 
+	apiKey := os.Getenv("KILHOG_API_KEY")
+
 	server := &http.Server{
 		Addr: addr,
 		Handler: handler.NewRouter(handler.Dependencies{
 			Store:          repos.Store,
 			NetworkService: service.NewNetworkService(repos.Networks, repos.Subnets),
 			SubnetService:  service.NewSubnetService(repos.Subnets, repos.Networks),
+			APIKey:         apiKey,
 		}),
 	}
 
-	log.Printf("kilhog listening on %s (db=%s)", addr, cfg.Driver)
+	if apiKey != "" {
+		log.Printf("kilhog listening on %s (db=%s, api_key=enabled)", addr, cfg.Driver)
+	} else {
+		log.Printf("kilhog listening on %s (db=%s, api_key=disabled)", addr, cfg.Driver)
+	}
 
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

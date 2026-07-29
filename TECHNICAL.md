@@ -274,23 +274,52 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 
 ## API routes
 
-| Method | Route               | Description |
-|--------|---------------------|-------------|
-| GET     | `/healthz`          | Server health (includes database ping) |
-| GET     | `/networks`         | List all networks |
-| POST    | `/networks`         | Create a network |
-| GET     | `/networks/{uuid}`  | Get a network by UUID |
-| PUT     | `/networks/{uuid}`  | Update a network |
-| DELETE  | `/networks/{uuid}`  | Delete a network (refused if subnets have this network as parent) |
-| GET     | `/networks/{uuid}/subnets` | List all subnets in a network |
-| POST    | `/networks/{uuid}/subnets` | Create a direct child subnet of the network |
-| GET     | `/networks/{uuid}/subnets/{subnet_uuid}` | Get a subnet in the network |
-| PUT     | `/networks/{uuid}/subnets/{subnet_uuid}` | Update a subnet description |
-| DELETE  | `/networks/{uuid}/subnets/{subnet_uuid}` | Delete a subnet (refused if it has children) |
-| GET     | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | List child subnets of a subnet |
-| POST    | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | Create a child subnet of a subnet |
+| Method | Route               | Auth required | Description |
+|--------|---------------------|---------------|-------------|
+| GET     | `/healthz`          | no            | Server health (includes database ping) |
+| GET     | `/networks`         | yes*          | List all networks |
+| POST    | `/networks`         | yes*          | Create a network |
+| GET     | `/networks/{uuid}`  | yes*          | Get a network by UUID |
+| PUT     | `/networks/{uuid}`  | yes*          | Update a network |
+| DELETE  | `/networks/{uuid}`  | yes*          | Delete a network (refused if subnets have this network as parent) |
+| GET     | `/networks/{uuid}/subnets` | yes*   | List all subnets in a network |
+| POST    | `/networks/{uuid}/subnets` | yes*   | Create a direct child subnet of the network |
+| GET     | `/networks/{uuid}/subnets/{subnet_uuid}` | yes* | Get a subnet in the network |
+| PUT     | `/networks/{uuid}/subnets/{subnet_uuid}` | yes* | Update a subnet description |
+| DELETE  | `/networks/{uuid}/subnets/{subnet_uuid}` | yes* | Delete a subnet (refused if it has children) |
+| GET     | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | yes* | List child subnets of a subnet |
+| POST    | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | yes* | Create a child subnet of a subnet |
+
+> \* Auth is required when `KILHOG_API_KEY` is set. When the variable is empty or unset, all routes remain open (local development default).
 
 > **Tenancy**: all subnet operations go through `/networks/{uuid}/…`. The network `uuid` in the URL is the isolation boundary; the server verifies that each subnet belongs to that network (directly or via the parent hierarchy).
+
+### Authentication
+
+Minimal API key protection is enabled when the `KILHOG_API_KEY` environment variable is set to a non-empty value.
+
+| Aspect | Behavior |
+|--------|----------|
+| Scope | All routes except `GET /healthz` (health probes stay public) |
+| Disabled | When `KILHOG_API_KEY` is empty or unset |
+| Comparison | Constant-time (`crypto/subtle`) to reduce timing leaks |
+
+Clients must send the key in one of these headers:
+
+| Header | Format |
+|--------|--------|
+| `Authorization` | `Bearer <api_key>` |
+| `X-API-Key` | `<api_key>` |
+
+Missing or invalid credentials:
+
+```json
+{
+  "status": "error",
+  "message": "missing or invalid API key",
+  "code": 401
+}
+```
 
 ### Tenancy and API scoping
 
@@ -645,6 +674,7 @@ Errors:
 |--------------------|---------------------|-------------|
 | `KILHOG_HOST`      | `0.0.0.0`           | HTTP listen address |
 | `KILHOG_PORT`      | `8080`              | HTTP listen port |
+| `KILHOG_API_KEY`   | *(empty)*           | API key for protected routes; auth disabled when unset |
 | `KILHOG_DB_DRIVER` | `sqlite`            | Database driver: `sqlite` or `postgres` |
 | `KILHOG_DB_DSN`    | `file:kilhog.db`    | Connection DSN (see examples below) |
 | `KILHOG_AUTO_MIGRATE` | `true`           | Apply upgrade migrations at startup |
@@ -725,6 +755,9 @@ The `scripts/dev/` folder contains standalone Bash scripts that call the REST AP
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `KILHOG_BASE_URL` | `http://localhost:8080` | API base URL |
+| `KILHOG_API_KEY` | *(empty)* | API key sent as `Authorization: Bearer …` when set |
+
+When the server runs with `KILHOG_API_KEY` set, export the same value before calling the dev scripts (or pass it inline: `KILHOG_API_KEY=secret make dev-create-networks`).
 
 | Script | JSON file(s) | Make target | Action |
 |--------|--------------|-------------|--------|
