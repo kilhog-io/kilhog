@@ -84,7 +84,7 @@ func (s *SubnetService) Create(ctx context.Context, input CreateSubnetInput) (*m
 	}
 
 	if existing, err := s.subnets.GetByName(ctx, parentCtx.networkUUID, name); err == nil && existing != nil {
-		return nil, ErrSubnetNameTaken
+		return nil, userError(ErrSubnetNameTaken, `subnet name %q is already used in this network`, name)
 	} else if err != nil && !errors.Is(err, ErrSubnetNotFound) {
 		return nil, fmt.Errorf("check subnet name: %w", err)
 	}
@@ -102,15 +102,15 @@ func (s *SubnetService) Create(ctx context.Context, input CreateSubnetInput) (*m
 		if err != nil {
 			switch {
 			case errors.Is(err, iputil.ErrInvalidIPv4Address):
-				return nil, ErrInvalidSubnetAddress
+				return nil, userError(ErrInvalidSubnetAddress, `invalid IPv4 address %q`, address)
 			case errors.Is(err, iputil.ErrInvalidPrefix):
-				return nil, ErrInvalidSubnetPrefix
+				return nil, userError(ErrInvalidSubnetPrefix, `invalid IPv4 prefix length %d (must be between 1 and 32)`, input.Prefix)
 			default:
 				return nil, fmt.Errorf("parse subnet address: %w", err)
 			}
 		}
 	case input.Parent.Kind == model.ParentKindNetwork:
-		return nil, ErrAddressRequired
+		return nil, userError(ErrAddressRequired, "address is required when the parent is a network")
 	case parentCtx.parentPrefix == nil:
 		return nil, fmt.Errorf("missing parent cidr for auto address allocation")
 	default:
@@ -118,11 +118,11 @@ func (s *SubnetService) Create(ctx context.Context, input CreateSubnetInput) (*m
 		if err != nil {
 			switch {
 			case errors.Is(err, iputil.ErrInvalidPrefix):
-				return nil, ErrInvalidSubnetPrefix
+				return nil, userError(ErrInvalidSubnetPrefix, `invalid IPv4 prefix length %d (must be between 1 and 32)`, input.Prefix)
 			case errors.Is(err, iputil.ErrPrefixTooBroad):
-				return nil, ErrPrefixTooBroad
+				return nil, userError(ErrPrefixTooBroad, `prefix /%d is less specific than parent prefix /%d`, input.Prefix, parentCtx.parentPrefix.Bits())
 			case errors.Is(err, iputil.ErrNoFreeBlock):
-				return nil, ErrNoFreeAddress
+				return nil, userError(ErrNoFreeAddress, `no free /%d block found in parent CIDR %s`, input.Prefix, parentCtx.parentPrefix.String())
 			default:
 				return nil, fmt.Errorf("find free address: %w", err)
 			}
@@ -130,15 +130,19 @@ func (s *SubnetService) Create(ctx context.Context, input CreateSubnetInput) (*m
 	}
 
 	if err := iputil.ValidateIPv4Subnet(candidate, parentCtx.parentPrefix, siblings); err != nil {
+		cidr := iputil.PrefixString(candidate)
 		switch {
 		case errors.Is(err, iputil.ErrOverlap):
-			return nil, ErrSubnetOverlap
+			return nil, userError(ErrSubnetOverlap, `subnet %s overlaps with an existing sibling under the same parent`, cidr)
 		case errors.Is(err, iputil.ErrOutsideParent):
-			return nil, ErrAddressOutsideParent
+			return nil, userError(ErrAddressOutsideParent, `subnet %s is outside parent CIDR %s`, cidr, parentCtx.parentPrefix.String())
 		case errors.Is(err, iputil.ErrPrefixTooBroad):
+			if parentCtx.parentPrefix != nil {
+				return nil, userError(ErrPrefixTooBroad, `prefix /%d is less specific than parent prefix /%d`, candidate.Bits(), parentCtx.parentPrefix.Bits())
+			}
 			return nil, ErrPrefixTooBroad
 		case errors.Is(err, iputil.ErrInvalidPrefix):
-			return nil, ErrInvalidSubnetPrefix
+			return nil, userError(ErrInvalidSubnetPrefix, `invalid IPv4 prefix length %d (must be between 1 and 32)`, candidate.Bits())
 		default:
 			return nil, fmt.Errorf("validate subnet: %w", err)
 		}
@@ -295,7 +299,7 @@ func (s *SubnetService) Delete(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("check subnet children: %w", err)
 	}
 	if len(children) > 0 {
-		return ErrSubnetHasChildren
+		return userError(ErrSubnetHasChildren, "subnet has %d child subnet(s) and cannot be deleted", len(children))
 	}
 
 	if err := s.subnets.Delete(ctx, id); err != nil {

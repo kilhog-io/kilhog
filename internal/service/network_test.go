@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -67,7 +68,7 @@ func TestNetworkService_CreateValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := svc.Create(ctx, tt.input)
-			if err != tt.wantErr {
+			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("Create() error = %v, want %v", err, tt.wantErr)
 			}
 		})
@@ -141,7 +142,7 @@ func TestNetworkService_Delete(t *testing.T) {
 		t.Fatalf("create subnet: %v", err)
 	}
 
-	if err := svc.Delete(ctx, networkWithChild.UUID); err != service.ErrNetworkHasChildren {
+	if err := svc.Delete(ctx, networkWithChild.UUID); !errors.Is(err, service.ErrNetworkHasChildren) {
 		t.Fatalf("Delete() error = %v, want ErrNetworkHasChildren", err)
 	}
 }

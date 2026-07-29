@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/kilhog-io/kilhog/internal/model"
@@ -207,7 +208,7 @@ func TestSubnetService_CreateValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := svc.Create(ctx, tt.input)
-			if err != tt.wantErr {
+			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("Create() error = %v, want %v", err, tt.wantErr)
 			}
 		})
@@ -292,7 +293,7 @@ func TestSubnetService_UpdateAndDelete(t *testing.T) {
 	}
 	_ = child
 
-	if err := svc.Delete(ctx, subnet.UUID); err != service.ErrSubnetHasChildren {
+	if err := svc.Delete(ctx, subnet.UUID); !errors.Is(err, service.ErrSubnetHasChildren) {
 		t.Fatalf("Delete() error = %v, want ErrSubnetHasChildren", err)
 	}
 

@@ -199,6 +199,64 @@ func TestSubnetRoutes_OverlapConflict(t *testing.T) {
 	if createRec.Code != http.StatusConflict {
 		t.Fatalf("POST status = %d, want %d, body = %s", createRec.Code, http.StatusConflict, createRec.Body.String())
 	}
+
+	var errResp errorResponse
+	if err := json.NewDecoder(createRec.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	wantMsg := `subnet 10.0.0.0/24 overlaps with an existing sibling under the same parent`
+	if errResp.Message != wantMsg {
+		t.Fatalf("message = %q, want %q", errResp.Message, wantMsg)
+	}
+}
+
+func TestSubnetRoutes_NameTakenMessage(t *testing.T) {
+	repos := openHandlerRepositories(t)
+	networkSvc := service.NewNetworkService(repos.Networks, repos.Subnets)
+	subnetSvc := service.NewSubnetService(repos.Subnets, repos.Networks)
+	router := NewRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
+
+	network, err := networkSvc.Create(t.Context(), service.CreateNetworkInput{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create network: %v", err)
+	}
+
+	createBody := map[string]any{
+		"name":    "dmz",
+		"prefix":  24,
+		"address": "10.0.0.0",
+	}
+	createPayload, _ := json.Marshal(createBody)
+	path := fmt.Sprintf("/networks/%s/subnets", network.UUID)
+
+	createReq := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(createPayload))
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("first POST status = %d, want %d, body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	dupPayload, _ := json.Marshal(map[string]any{
+		"name":    "dmz",
+		"prefix":  24,
+		"address": "10.0.1.0",
+	})
+	dupReq := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(dupPayload))
+	dupRec := httptest.NewRecorder()
+	router.ServeHTTP(dupRec, dupReq)
+
+	if dupRec.Code != http.StatusConflict {
+		t.Fatalf("duplicate POST status = %d, want %d, body = %s", dupRec.Code, http.StatusConflict, dupRec.Body.String())
+	}
+
+	var errResp errorResponse
+	if err := json.NewDecoder(dupRec.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	wantMsg := `subnet name "dmz" is already used in this network`
+	if errResp.Message != wantMsg {
+		t.Fatalf("message = %q, want %q", errResp.Message, wantMsg)
+	}
 }
 
 func TestSubnetRoutes_NotFound(t *testing.T) {

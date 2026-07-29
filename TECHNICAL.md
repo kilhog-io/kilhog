@@ -661,6 +661,28 @@ Erreurs :
 - Succès : `{"status": "success", "data": ...}`
 - Erreur : `{"status": "error", "message": "...", "code": 400}`
 
+Les messages d'erreur de conflit (`409`) et de validation (`400`) sont **explicites** : ils incluent les valeurs en cause (nom, CIDR, prefix, etc.) pour faciliter le diagnostic côté client.
+
+Exemple — nom de subnet déjà utilisé :
+
+```json
+{
+  "status": "error",
+  "message": "subnet name \"dmz\" is already used in this network",
+  "code": 409
+}
+```
+
+Exemple — overlap CIDR :
+
+```json
+{
+  "status": "error",
+  "message": "subnet 10.0.0.0/24 overlaps with an existing sibling under the same parent",
+  "code": 409
+}
+```
+
 ## Build
 
 ```bash

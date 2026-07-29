@@ -132,15 +132,15 @@ func parseUUID(raw string) (uuid.UUID, error) {
 func writeNetworkError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, service.ErrNetworkNotFound):
-		writeError(w, http.StatusNotFound, "network not found")
+		writeError(w, http.StatusNotFound, errorMessage(err, "network not found"))
 	case errors.Is(err, service.ErrNetworkHasChildren):
-		writeError(w, http.StatusConflict, "network has child subnets and cannot be deleted")
+		writeError(w, http.StatusConflict, errorMessage(err, "network has child subnets and cannot be deleted"))
 	case errors.Is(err, service.ErrNetworkNameTaken):
-		writeError(w, http.StatusConflict, "network name already exists")
+		writeError(w, http.StatusConflict, errorMessage(err, "network name already exists"))
 	case errors.Is(err, service.ErrInvalidNetworkName):
-		writeError(w, http.StatusBadRequest, "network name is required")
+		writeError(w, http.StatusBadRequest, errorMessage(err, "network name is required"))
 	case errors.Is(err, service.ErrDuplicateTagKey):
-		writeError(w, http.StatusBadRequest, "duplicate tag key")
+		writeError(w, http.StatusBadRequest, errorMessage(err, "duplicate tag key"))
 	default:
 		if err.Error() == "tag key is required" {
 			writeError(w, http.StatusBadRequest, err.Error())

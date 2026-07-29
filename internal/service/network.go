@@ -52,7 +52,7 @@ func (s *NetworkService) Create(ctx context.Context, input CreateNetworkInput) (
 	}
 
 	if existing, err := s.networks.GetByName(ctx, name); err == nil && existing != nil {
-		return nil, ErrNetworkNameTaken
+		return nil, userError(ErrNetworkNameTaken, `network name %q is already used`, name)
 	} else if err != nil && !errors.Is(err, ErrNetworkNotFound) {
 		return nil, fmt.Errorf("check network name: %w", err)
 	}
@@ -109,7 +109,7 @@ func (s *NetworkService) Update(ctx context.Context, id uuid.UUID, input UpdateN
 
 	if name != network.Name {
 		if existing, err := s.networks.GetByName(ctx, name); err == nil && existing != nil && existing.UUID != id {
-			return nil, ErrNetworkNameTaken
+			return nil, userError(ErrNetworkNameTaken, `network name %q is already used`, name)
 		} else if err != nil && !errors.Is(err, ErrNetworkNotFound) {
 			return nil, fmt.Errorf("check network name: %w", err)
 		}
@@ -145,7 +145,7 @@ func (s *NetworkService) Delete(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("check network children: %w", err)
 	}
 	if len(children) > 0 {
-		return ErrNetworkHasChildren
+		return userError(ErrNetworkHasChildren, "network has %d direct child subnet(s) and cannot be deleted", len(children))
 	}
 
 	if err := s.networks.Delete(ctx, id); err != nil {
@@ -166,7 +166,7 @@ func validateTags(tags []model.Tag) error {
 			return fmt.Errorf("tag key is required")
 		}
 		if _, ok := seen[key]; ok {
-			return ErrDuplicateTagKey
+			return userError(ErrDuplicateTagKey, `duplicate tag key %q`, key)
 		}
 		seen[key] = struct{}{}
 	}
