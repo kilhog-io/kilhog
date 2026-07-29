@@ -4,37 +4,37 @@
   <img src="kilhog.png" alt="kilhog logo" width="200">
 </p>
 
-**kilhog** est une application **IPAM** (*IP Address Management*) : elle permet de gérer des pools et des adresses IP via une API REST.
+**kilhog** is an **IPAM** (*IP Address Management*) application: it manages IP pools and addresses through a REST API.
 
-Son nom reprend une traduction anglais–français–breton : *pool* → *poule* → **kilhog** (*coq* en breton) — un coq qui gère les poules, les pools d'adresses.
+Its name comes from an English–French–Breton word chain: *pool* → *poule* → **kilhog** (*rooster* in Breton) — a rooster that manages the hens, the address pools.
 
-## Fonctionnalités
+## Features
 
-- Gestion de **networks** (périmètres de tenancy)
-- Gestion de **subnets** IPv4 hiérarchiques (blocks CIDR et adresses hôtes)
-- Validation CIDR : containment parent, détection d'overlap, allocation automatique d'adresses
-- Persistance **SQLite** ou **PostgreSQL** avec migrations versionnées
-- API REST JSON, prête pour multi-tenancy et RBAC
+- **Network** management (tenancy boundaries)
+- Hierarchical IPv4 **subnet** management (CIDR blocks and host addresses)
+- CIDR validation: parent containment, overlap detection, automatic address allocation
+- **SQLite** or **PostgreSQL** persistence with versioned migrations
+- JSON REST API, ready for multi-tenancy and RBAC
 
 ## Documentation
 
-| Fichier | Contenu |
-|---------|---------|
-| [FUNCTIONAL.md](FUNCTIONAL.md) | Règles métier : entités, contraintes d'unicité, hiérarchie des subnets |
-| [TECHNICAL.md](TECHNICAL.md) | Architecture, stack, schéma de base, routes API et exemples |
+| File | Content |
+|------|---------|
+| [FUNCTIONAL.md](FUNCTIONAL.md) | Business rules: entities, uniqueness constraints, subnet hierarchy |
+| [TECHNICAL.md](TECHNICAL.md) | Architecture, stack, database schema, API routes and examples |
 
-## Démarrage rapide
+## Quick start
 
 ```bash
-# Compiler et lancer le serveur (SQLite, port 8080)
+# Build and run the server (SQLite, port 8080)
 make run-dev
 
-# Dans un autre terminal : créer des networks et subnets d'exemple
+# In another terminal: create sample networks and subnets
 make dev-create-networks
 make dev-create-subnets
 ```
 
-Vérifier que l'API répond :
+Check that the API responds:
 
 ```bash
 curl http://localhost:8080/healthz
@@ -43,14 +43,14 @@ curl http://localhost:8080/healthz
 ## Build
 
 ```bash
-make build    # binaire dans bin/kilhog
-go test ./... # lancer les tests
+make build    # binary in bin/kilhog
+go test ./... # run tests
 ```
 
 ## Stack
 
 - Go 1.26+
-- API REST, architecture en couches (`handler` → `service` → `repository`)
-- Drivers SQLite et PostgreSQL
+- REST API, layered architecture (`handler` → `service` → `repository`)
+- SQLite and PostgreSQL drivers
 
-Voir [TECHNICAL.md](TECHNICAL.md) pour le détail de la configuration, des routes et du schéma relationnel.
+See [TECHNICAL.md](TECHNICAL.md) for configuration details, routes, and the relational schema.

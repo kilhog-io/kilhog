@@ -2,46 +2,46 @@
 
 ## Stack
 
-- **Langage** : Go 1.26+
-- **Module** : `github.com/kilhog-io/kilhog`
-- **Architecture** : API REST, découpage en couches
+- **Language**: Go 1.26+
+- **Module**: `github.com/kilhog-io/kilhog`
+- **Architecture**: REST API, layered design
 
-## Arborescence
+## Directory layout
 
 ```
 kilhog/
 ├── cmd/
-│   └── kilhog/          # Point d'entrée de l'application (main.go)
+│   └── kilhog/          # Application entry point (main.go)
 ├── internal/
-│   ├── handler/         # Handlers HTTP et validation des requêtes
-│   ├── service/         # Logique métier et interfaces repository
-│   ├── repository/      # Accès aux données, migrations, drivers SQL
-│   │   ├── migration/   # Exécution des migrations versionnées (upgrade / downgrade)
-│   │   ├── postgres/    # Implémentation PostgreSQL
-│   │   └── sqlite/      # Implémentation SQLite
-│   └── model/           # Modèles et structures de données
-├── migrations/          # Scripts SQL versionnés embarqués (sqlite/ et postgres/)
+│   ├── handler/         # HTTP handlers and request validation
+│   ├── service/         # Business logic and repository interfaces
+│   ├── repository/      # Data access, migrations, SQL drivers
+│   │   ├── migration/   # Versioned migration runner (upgrade / downgrade)
+│   │   ├── postgres/    # PostgreSQL implementation
+│   │   └── sqlite/      # SQLite implementation
+│   └── model/           # Models and data structures
+├── migrations/          # Embedded versioned SQL scripts (sqlite/ and postgres/)
 ├── scripts/
-│   └── dev/             # Scripts HTTP pour le développement local
-├── FUNCTIONAL.md        # Règles métier (définies par l'utilisateur)
-└── TECHNICAL.md         # Ce fichier
+│   └── dev/             # HTTP scripts for local development
+├── FUNCTIONAL.md        # Business rules (defined by the user)
+└── TECHNICAL.md         # This file
 ```
 
 ## Domain model (`internal/model`)
 
-Modélisation technique de `FUNCTIONAL.md`. Voir ce fichier pour les règles métier.
+Technical modeling of `FUNCTIONAL.md`. See that file for business rules.
 
-| Type           | Fichier            | Description |
+| Type           | File               | Description |
 |----------------|--------------------|-------------|
-| `Tag`          | `tag.go`           | Paire key–value de metadata |
-| `AddressType`  | `address_type.go`  | Famille d'adressage : `ipv4`, `ipv6` |
-| `Parent`       | `parent.go`        | Référence vers un parent `network` ou `subnet` |
-| `Network`      | `network.go`       | Conteneur de tenancy |
-| `Subnet`       | `subnet.go`        | Espace d'adressage IP (block ou host) |
+| `Tag`          | `tag.go`           | Key–value metadata pair |
+| `AddressType`  | `address_type.go`  | Address family: `ipv4`, `ipv6` |
+| `Parent`       | `parent.go`        | Reference to a `network` or `subnet` parent |
+| `Network`      | `network.go`       | Tenancy container |
+| `Subnet`       | `subnet.go`        | IP address space (block or host) |
 
 ### `Network`
 
-| Champ         | Type        | JSON |
+| Field         | Type        | JSON |
 |---------------|-------------|------|
 | `UUID`        | `uuid.UUID` | `uuid` |
 | `Name`        | `string`    | `name` |
@@ -50,7 +50,7 @@ Modélisation technique de `FUNCTIONAL.md`. Voir ce fichier pour les règles mé
 
 ### `Subnet`
 
-| Champ         | Type          | JSON |
+| Field         | Type          | JSON |
 |---------------|---------------|------|
 | `UUID`        | `uuid.UUID`   | `uuid` |
 | `Name`        | `string`      | `name` |
@@ -61,84 +61,84 @@ Modélisation technique de `FUNCTIONAL.md`. Voir ce fichier pour les règles mé
 | `Parent`      | `Parent`      | `parent` |
 | `Tags`        | `[]Tag`       | `tags` |
 
-Méthodes :
+Methods:
 
-- `CIDR() string` — retourne `{address}/{prefix}`
-- `IsLeaf() bool` — `true` si prefix `/32` (IPv4) ou `/128` (IPv6)
+- `CIDR() string` — returns `{address}/{prefix}`
+- `IsLeaf() bool` — `true` if prefix is `/32` (IPv4) or `/128` (IPv6)
 
-Constantes : `IPv4HostPrefix` (32), `IPv6HostPrefix` (128).
+Constants: `IPv4HostPrefix` (32), `IPv6HostPrefix` (128).
 
 ### `Parent`
 
-| Champ  | Type          | JSON |
+| Field  | Type          | JSON |
 |--------|---------------|------|
 | `Kind` | `ParentKind`  | `kind` (`network`, `subnet`) |
 | `UUID` | `uuid.UUID`   | `uuid` |
 
 ## Repository interfaces (`internal/service`)
 
-Interfaces définies côté service (consommées par la logique métier) :
+Interfaces defined on the service side (consumed by business logic):
 
-- `NetworkRepository` — CRUD et listing des networks
-- `SubnetRepository` — CRUD, listing par network ou par parent
+- `NetworkRepository` — CRUD and listing of networks
+- `SubnetRepository` — CRUD, listing by network or by parent
 
-## Utilitaires IPv4 (`internal/iputil`)
+## IPv4 utilities (`internal/iputil`)
 
-| Fonction | Rôle |
+| Function | Role |
 |----------|------|
-| `ParseIPv4Prefix` | Parse et normalise une adresse/prefix IPv4 |
-| `ValidateIPv4Subnet` | Vérifie containment parent et absence d'overlap entre siblings |
-| `FindFreeIPv4Block` | Trouve la première plage `/prefix` libre dans le CIDR d'un subnet parent |
+| `ParseIPv4Prefix` | Parse and normalize an IPv4 address/prefix |
+| `ValidateIPv4Subnet` | Check parent containment and absence of overlap among siblings |
+| `FindFreeIPv4Block` | Find the first free `/prefix` block within a subnet parent CIDR |
 
-## Couche de persistance (`internal/repository`)
+## Persistence layer (`internal/repository`)
 
-Backend de données **configurable et abstrait**. Deux drivers sont supportés : **SQLite** et **PostgreSQL**. Le service consomme les interfaces repository ; le choix du driver est transparent pour la logique métier.
+**Configurable, abstract** data backend. Two drivers are supported: **SQLite** and **PostgreSQL**. The service consumes repository interfaces; driver choice is transparent to business logic.
 
 ### Abstraction
 
 ```
 service (NetworkRepository, SubnetRepository)
     └── repository/
-            ├── sqlite/    → implémentations SQLite
-            ├── postgres/  → implémentations PostgreSQL
-            └── migration/ → runner de migrations (commun aux deux drivers)
+            ├── sqlite/    → SQLite implementations
+            ├── postgres/  → PostgreSQL implementations
+            └── migration/ → migration runner (shared by both drivers)
 ```
 
-Chaque driver implémente les interfaces définies dans `internal/service`. Les requêtes SQL utilisent des dialectes adaptés là où nécessaire (types UUID, `TIMESTAMPTZ`, etc.).
+Each driver implements the interfaces defined in `internal/service`. SQL queries use adapted dialects where needed (UUID types, `TIMESTAMPTZ`, etc.).
 
-Les implémentations concrètes des repositories se trouvent dans `internal/repository/` (`network_repository.go`, `subnet_repository.go`) et sont instanciées via `repository.Open`.
+Concrete repository implementations live in `internal/repository/` (`network_repository.go`, `subnet_repository.go`) and are instantiated via `repository.Open`.
 
-### Accès concurrents
+### Concurrent access
 
-Les appels API peuvent arriver en parallèle. La couche `db.Store` fournit les primitives suivantes :
+API calls may arrive in parallel. The `db.Store` layer provides:
 
-| Mécanisme | Rôle |
+| Mechanism | Role |
 |-----------|------|
-| Pool `database/sql` | Connexions concurrentes (lectures parallèles) |
-| `WithWriteLock` | Sur SQLite, mutex applicatif sérialisant les écritures |
-| `WithTx` / `WithWriteTx` | Transactions SQL atomiques (prêtes pour la logique métier future) |
-| `AcquireMigrationLock` | Verrou exclusif pendant les migrations (mutex SQLite, `pg_advisory_lock` PostgreSQL) |
-| WAL + `busy_timeout` (SQLite) | Lecteurs non bloqués par les écrivains |
+| `database/sql` pool | Concurrent connections (parallel reads) |
+| `WithWriteLock` | On SQLite, application mutex serializing writes |
+| `WithTx` / `WithWriteTx` | Atomic SQL transactions |
+| `AcquireMigrationLock` | Exclusive lock during migrations (SQLite mutex, PostgreSQL `pg_advisory_lock`) |
+| WAL + `busy_timeout` (SQLite) | Readers not blocked by writers |
 
-Les opérations de mutation (`Create`, `Update`, `Delete`) passent par `WithWriteTx` : verrou d'écriture SQLite + transaction SQL. Les lectures (`Get*`, `List*`) utilisent le pool directement.
+Mutations (`Create`, `Update`, `Delete`) go through `WithWriteTx`: SQLite write lock + SQL transaction. Reads (`Get*`, `List*`) use the pool directly.
 
-Sur PostgreSQL, le verrou applicatif SQLite est désactivé : la concurrence est gérée par MVCC et les transactions SQL.
+On PostgreSQL, the SQLite application lock is disabled: concurrency is handled by MVCC and SQL transactions.
 
-### Connexion et création de la base
+### Connection and database creation
 
-Au démarrage, l'application :
+At startup, the application:
 
-1. Lit la configuration (`KILHOG_DB_DRIVER`, `KILHOG_DB_DSN`).
-2. **Crée la base si elle n'existe pas** :
-   - **SQLite** : crée le fichier et les répertoires parents du chemin DSN.
-   - **PostgreSQL** : se connecte au catalogue `postgres`, exécute `CREATE DATABASE` si la base cible est absente, puis se reconnecte à la base cible.
-3. Ouvre une connexion poolée vers la base.
-4. Exécute les migrations **upgrade** en attente.
-5. Injecte les repositories dans les services / handlers.
+1. Reads configuration (`KILHOG_DB_DRIVER`, `KILHOG_DB_DSN`).
+2. **Creates the database if it does not exist**:
+   - **SQLite**: creates the file and parent directories from the DSN path.
+   - **PostgreSQL**: connects to the `postgres` catalog, runs `CREATE DATABASE` if the target database is missing, then reconnects to the target database.
+3. Opens a pooled connection to the database.
+4. Runs pending **upgrade** migrations.
+5. Injects repositories into services / handlers.
 
-### Migrations SQL versionnées
+### Versioned SQL migrations
 
-Les scripts SQL sont embarqués via `go:embed` dans `internal/repository/migration/migrations/`, organisés par dialecte :
+SQL scripts are embedded via `go:embed` in `internal/repository/migration/migrations/`, organized by dialect:
 
 ```
 internal/repository/migration/migrations/
@@ -150,17 +150,17 @@ internal/repository/migration/migrations/
     └── 001_initial_schema.down.sql
 ```
 
-| Fichier | Rôle |
-|---------|------|
-| `{version}_{name}.up.sql` | Applique la version N |
-| `{version}_{name}.down.sql` | Annule la version N |
+| File | Role |
+|------|------|
+| `{version}_{name}.up.sql` | Applies version N |
+| `{version}_{name}.down.sql` | Reverts version N |
 
-Convention :
+Convention:
 
-- `{version}` : entier sur 3 chiffres, zero-padded (`001`, `002`, …).
-- `{name}` : identifiant snake_case décrivant le changement (`initial_schema`).
+- `{version}`: zero-padded 3-digit integer (`001`, `002`, …).
+- `{name}`: snake_case identifier describing the change (`initial_schema`).
 
-Exemple (structure par dialecte) :
+Example (per-dialect structure):
 
 ```
 internal/repository/migration/migrations/sqlite/
@@ -168,146 +168,146 @@ internal/repository/migration/migrations/sqlite/
 └── 001_initial_schema.down.sql
 ```
 
-#### Table de suivi : `schema_migrations`
+#### Tracking table: `schema_migrations`
 
-| Colonne      | Type        | Description |
-|--------------|-------------|-------------|
-| `version`    | `INTEGER`   | Numéro de version appliquée (PK) |
-| `applied_at` | `TIMESTAMPTZ` | Horodatage d'application |
+| Column      | Type          | Description |
+|-------------|---------------|-------------|
+| `version`   | `INTEGER`     | Applied version number (PK) |
+| `applied_at`| `TIMESTAMPTZ` | Application timestamp |
 
-#### Comportement
+#### Behavior
 
-| Opération | Déclenchement | Comportement |
-|-----------|---------------|--------------|
-| **Upgrade** | Automatique au démarrage | Applique toutes les versions `> version courante`, dans l'ordre croissant |
-| **Downgrade** | Explicite (CLI ou API admin) | Exécute le `.down.sql` de la version cible, supprime l'entrée dans `schema_migrations` |
+| Operation | Trigger | Behavior |
+|-----------|---------|----------|
+| **Upgrade** | Automatic at startup | Applies all versions `> current version`, in ascending order |
+| **Downgrade** | Explicit (CLI or admin API) | Runs the target version's `.down.sql`, removes the entry from `schema_migrations` |
 
-Les migrations déjà appliquées ne sont jamais rejouées. En cas d'échec mid-migration, la transaction est annulée et la version n'est pas enregistrée.
+Already applied migrations are never replayed. On mid-migration failure, the transaction is rolled back and the version is not recorded.
 
-### Schéma relationnel
+### Relational schema
 
-Modélisation des entités `Network`, `Subnet` et `Tag` définies dans `FUNCTIONAL.md`.
+Modeling of `Network`, `Subnet`, and `Tag` entities defined in `FUNCTIONAL.md`.
 
-#### Table `networks`
+#### `networks` table
 
-| Colonne       | Type          | Contraintes | Mappe |
-|---------------|---------------|-------------|-------|
-| `uuid`        | UUID          | PK          | `Network.UUID` |
-| `name`        | TEXT          | NOT NULL, UNIQUE | `Network.Name` |
-| `description` | TEXT          | NULL        | `Network.Description` |
+| Column       | Type          | Constraints | Maps to |
+|--------------|---------------|-------------|---------|
+| `uuid`       | UUID          | PK          | `Network.UUID` |
+| `name`       | TEXT          | NOT NULL, UNIQUE | `Network.Name` |
+| `description`| TEXT          | NULL        | `Network.Description` |
+| `created_at` | TIMESTAMPTZ   | NOT NULL, DEFAULT now() | — |
+| `updated_at` | TIMESTAMPTZ   | NOT NULL, DEFAULT now() | — |
+
+#### `subnets` table
+
+| Column        | Type          | Constraints | Maps to |
+|---------------|---------------|-------------|---------|
+| `uuid`        | UUID          | PK          | `Subnet.UUID` |
+| `network_uuid`| UUID          | NOT NULL, FK → `networks(uuid)` ON DELETE CASCADE | Tenancy (root network) |
+| `name`        | TEXT          | NOT NULL, UNIQUE `(network_uuid, name)` | `Subnet.Name` |
+| `description` | TEXT          | NULL        | `Subnet.Description` |
+| `prefix`      | INTEGER       | NOT NULL    | `Subnet.Prefix` |
+| `address`     | TEXT          | NOT NULL    | `Subnet.Address` |
+| `address_type`| TEXT          | NOT NULL, CHECK IN (`ipv4`, `ipv6`) | `Subnet.Type` |
+| `parent_kind` | TEXT          | NOT NULL, CHECK IN (`network`, `subnet`) | `Subnet.Parent.Kind` |
+| `parent_uuid` | UUID          | NOT NULL    | `Subnet.Parent.UUID` |
 | `created_at`  | TIMESTAMPTZ   | NOT NULL, DEFAULT now() | — |
 | `updated_at`  | TIMESTAMPTZ   | NOT NULL, DEFAULT now() | — |
 
-#### Table `subnets`
+Recommended indexes:
 
-| Colonne        | Type          | Contraintes | Mappe |
-|----------------|---------------|-------------|-------|
-| `uuid`         | UUID          | PK          | `Subnet.UUID` |
-| `network_uuid` | UUID          | NOT NULL, FK → `networks(uuid)` ON DELETE CASCADE | Tenancy (network root) |
-| `name`         | TEXT          | NOT NULL, UNIQUE `(network_uuid, name)` | `Subnet.Name` |
-| `description`  | TEXT          | NULL        | `Subnet.Description` |
-| `prefix`       | INTEGER       | NOT NULL    | `Subnet.Prefix` |
-| `address`      | TEXT          | NOT NULL    | `Subnet.Address` |
-| `address_type` | TEXT          | NOT NULL, CHECK IN (`ipv4`, `ipv6`) | `Subnet.Type` |
-| `parent_kind`  | TEXT          | NOT NULL, CHECK IN (`network`, `subnet`) | `Subnet.Parent.Kind` |
-| `parent_uuid`  | UUID          | NOT NULL    | `Subnet.Parent.UUID` |
-| `created_at`   | TIMESTAMPTZ   | NOT NULL, DEFAULT now() | — |
-| `updated_at`   | TIMESTAMPTZ   | NOT NULL, DEFAULT now() | — |
+- `idx_subnets_network_uuid` on `network_uuid`
+- `idx_subnets_parent` on `(parent_kind, parent_uuid)`
 
-Index recommandés :
+> **Tenancy note**: `network_uuid` is denormalized on every subnet to enforce `name` uniqueness within the network and simplify listing queries, even when the direct parent is another subnet.
 
-- `idx_subnets_network_uuid` sur `network_uuid`
-- `idx_subnets_parent` sur `(parent_kind, parent_uuid)`
+#### `tags` table
 
-> **Note tenancy** : `network_uuid` est dénormalisé sur chaque subnet pour garantir l'unicité du `name` au sein du network et simplifier les requêtes de listing, même lorsque le parent direct est un autre subnet.
+Polymorphic tags attached to a network or subnet.
 
-#### Table `tags`
-
-Tags polymorphiques attachés à un network ou un subnet.
-
-| Colonne         | Type          | Contraintes | Mappe |
-|-----------------|---------------|-------------|-------|
-| `resource_kind` | TEXT          | NOT NULL, CHECK IN (`network`, `subnet`) | Type de resource |
-| `resource_uuid` | UUID          | NOT NULL    | UUID du network ou subnet |
+| Column          | Type          | Constraints | Maps to |
+|-----------------|---------------|-------------|---------|
+| `resource_kind` | TEXT          | NOT NULL, CHECK IN (`network`, `subnet`) | Resource type |
+| `resource_uuid` | UUID          | NOT NULL    | Network or subnet UUID |
 | `key`           | TEXT          | NOT NULL    | `Tag.Key` |
 | `value`         | TEXT          | NOT NULL    | `Tag.Value` |
 
-Clé primaire composite : `(resource_kind, resource_uuid, key)`.
+Composite primary key: `(resource_kind, resource_uuid, key)`.
 
-FK avec suppression en cascade :
+Cascade delete FKs:
 
 - `(network, resource_uuid)` → `networks(uuid)` ON DELETE CASCADE
 - `(subnet, resource_uuid)` → `subnets(uuid)` ON DELETE CASCADE
 
-#### Diagramme des relations
+#### Relationship diagram
 
 ```
 networks (1) ──< subnets (N)
     │                  │
     └──< tags          └──< tags
-         (polymorphique, resource_kind + resource_uuid)
+         (polymorphic, resource_kind + resource_uuid)
 ```
 
-#### Script initial (`001_initial_schema`)
+#### Initial script (`001_initial_schema`)
 
-Le script `001_initial_schema.up.sql` crée les tables `schema_migrations`, `networks`, `subnets` et `tags` avec les contraintes ci-dessus. Le script `001_initial_schema.down.sql` supprime ces tables dans l'ordre inverse des dépendances.
+The `001_initial_schema.up.sql` script creates `schema_migrations`, `networks`, `subnets`, and `tags` tables with the constraints above. The `001_initial_schema.down.sql` script drops these tables in reverse dependency order.
 
-### Différences dialectales
+### Dialect differences
 
 | Aspect | SQLite | PostgreSQL |
 |--------|--------|------------|
-| Type UUID | `TEXT` (format canonical) ou `BLOB` | `UUID` natif |
-| Horodatage | `TEXT` ISO-8601 ou `DATETIME` | `TIMESTAMPTZ` |
-| Création de base | Fichier sur disque | `CREATE DATABASE` via connexion admin |
-| Driver Go | `modernc.org/sqlite` ou `mattn/go-sqlite3` | `jackc/pgx/v5` |
+| UUID type | `TEXT` (canonical format) or `BLOB` | Native `UUID` |
+| Timestamps | `TEXT` ISO-8601 or `DATETIME` | `TIMESTAMPTZ` |
+| Database creation | File on disk | `CREATE DATABASE` via admin connection |
+| Go driver | `modernc.org/sqlite` or `mattn/go-sqlite3` | `jackc/pgx/v5` |
 
-Les migrations peuvent contenir des sections dialect-specific si nécessaire ; à défaut, le SQL reste le plus portable possible.
+Migrations may contain dialect-specific sections if needed; otherwise SQL stays as portable as possible.
 
-## Dépendances
+## Dependencies
 
 | Module | Usage |
 |--------|-------|
-| `github.com/google/uuid` | Identifiants `UUID` des resources |
-| `database/sql` | Abstraction SQL standard Go |
-| `modernc.org/sqlite` | Driver SQLite (pure Go) |
-| `jackc/pgx/v5` | Driver PostgreSQL |
+| `github.com/google/uuid` | Resource `UUID` identifiers |
+| `database/sql` | Standard Go SQL abstraction |
+| `modernc.org/sqlite` | SQLite driver (pure Go) |
+| `jackc/pgx/v5` | PostgreSQL driver |
 
-## Routes API
+## API routes
 
-| Méthode | Route               | Description |
-|---------|---------------------|-------------|
-| GET     | `/healthz`          | État de santé du serveur (inclut un ping base de données) |
-| GET     | `/networks`         | Liste tous les networks |
-| POST    | `/networks`         | Crée un network |
-| GET     | `/networks/{uuid}`  | Récupère un network par UUID |
-| PUT     | `/networks/{uuid}`  | Met à jour un network |
-| DELETE  | `/networks/{uuid}`  | Supprime un network (refusé si des subnets ont ce network comme parent) |
-| GET     | `/networks/{uuid}/subnets` | Liste tous les subnets d'un network |
-| POST    | `/networks/{uuid}/subnets` | Crée un subnet enfant direct du network |
-| GET     | `/networks/{uuid}/subnets/{subnet_uuid}` | Récupère un subnet du network |
-| PUT     | `/networks/{uuid}/subnets/{subnet_uuid}` | Met à jour la description d'un subnet |
-| DELETE  | `/networks/{uuid}/subnets/{subnet_uuid}` | Supprime un subnet (refusé s'il a des enfants) |
-| GET     | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | Liste les subnets enfants d'un subnet |
-| POST    | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | Crée un subnet enfant d'un subnet |
+| Method | Route               | Description |
+|--------|---------------------|-------------|
+| GET     | `/healthz`          | Server health (includes database ping) |
+| GET     | `/networks`         | List all networks |
+| POST    | `/networks`         | Create a network |
+| GET     | `/networks/{uuid}`  | Get a network by UUID |
+| PUT     | `/networks/{uuid}`  | Update a network |
+| DELETE  | `/networks/{uuid}`  | Delete a network (refused if subnets have this network as parent) |
+| GET     | `/networks/{uuid}/subnets` | List all subnets in a network |
+| POST    | `/networks/{uuid}/subnets` | Create a direct child subnet of the network |
+| GET     | `/networks/{uuid}/subnets/{subnet_uuid}` | Get a subnet in the network |
+| PUT     | `/networks/{uuid}/subnets/{subnet_uuid}` | Update a subnet description |
+| DELETE  | `/networks/{uuid}/subnets/{subnet_uuid}` | Delete a subnet (refused if it has children) |
+| GET     | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | List child subnets of a subnet |
+| POST    | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | Create a child subnet of a subnet |
 
-> **Tenancy** : toutes les opérations sur les subnets passent par `/networks/{uuid}/…`. Le `uuid` du network dans l'URL est le périmètre d'isolation ; le serveur vérifie que chaque subnet appartient bien à ce network (directement ou via la hiérarchie de parents).
+> **Tenancy**: all subnet operations go through `/networks/{uuid}/…`. The network `uuid` in the URL is the isolation boundary; the server verifies that each subnet belongs to that network (directly or via the parent hierarchy).
 
-### Tenancy et scoping API
+### Tenancy and API scoping
 
-L'API est organisée autour du **network comme frontière de tenancy** :
+The API is organized around the **network as the tenancy boundary**:
 
-- **RBAC** : les permissions peuvent être définies par `network/{uuid}` sans parcourir l'arbre de subnets.
-- **Multi-tenancy** : chaque requête subnet porte explicitement le network cible ; un subnet d'un autre network renvoie `404`.
-- **Merge / fédération** : deux instances peuvent fusionner des networks indépendamment ; l'UUID network est la clé de regroupement.
-- **Parent implicite** : le corps de création ne contient plus `parent` — il est dérivé de l'URL, ce qui évite les incohérences URL/body.
+- **RBAC**: permissions can be defined per `network/{uuid}` without walking the subnet tree.
+- **Multi-tenancy**: every subnet request explicitly carries the target network; a subnet from another network returns `404`.
+- **Merge / federation**: two instances can merge networks independently; the network UUID is the grouping key.
+- **Implicit parent**: the create request body no longer contains `parent` — it is derived from the URL, avoiding URL/body inconsistencies.
 
 ```
-/networks/{uuid}/subnets                              → enfants directs du network
-/networks/{uuid}/subnets/{subnet_uuid}                → CRUD d'un subnet
-/networks/{uuid}/subnets/{subnet_uuid}/subnets        → enfants directs du subnet
+/networks/{uuid}/subnets                              → direct children of the network
+/networks/{uuid}/subnets/{subnet_uuid}                → subnet CRUD
+/networks/{uuid}/subnets/{subnet_uuid}/subnets        → direct children of the subnet
 ```
 
-Le champ `parent` reste exposé dans les **réponses** (immuable après création) pour reconstruire la hiérarchie côté client.
+The `parent` field remains exposed in **responses** (immutable after creation) so clients can reconstruct the hierarchy.
 
 ### `GET /healthz`
 
@@ -324,9 +324,9 @@ Le champ `parent` reste exposé dans les **réponses** (immuable après créatio
 
 #### `GET /networks`
 
-Liste tous les networks, triés par nom.
+Lists all networks, sorted by name.
 
-Réponse `200 OK` :
+`200 OK` response:
 
 ```json
 {
@@ -335,7 +335,7 @@ Réponse `200 OK` :
     {
       "uuid": "550e8400-e29b-41d4-a716-446655440000",
       "name": "lab",
-      "description": "Réseau de laboratoire",
+      "description": "Lab network",
       "tags": [{"key": "env", "value": "dev"}]
     }
   ]
@@ -344,65 +344,65 @@ Réponse `200 OK` :
 
 #### `POST /networks`
 
-Crée un network. L'UUID est généré côté serveur.
+Creates a network. UUID is generated server-side.
 
-Corps de requête :
+Request body:
 
 ```json
 {
   "name": "lab",
-  "description": "Réseau de laboratoire",
+  "description": "Lab network",
   "tags": [{"key": "env", "value": "dev"}]
 }
 ```
 
-| Champ         | Requis | Description |
-|---------------|--------|-------------|
-| `name`        | oui    | Nom unique en base |
-| `description` | non    | Texte libre |
-| `tags`        | non    | Paires key–value (clés uniques par resource) |
+| Field         | Required | Description |
+|---------------|----------|-------------|
+| `name`        | yes      | Unique name in the database |
+| `description` | no       | Free-form text |
+| `tags`        | no       | Key–value pairs (unique keys per resource) |
 
-Réponse `201 Created` : le network créé dans `data`.
+`201 Created` response: the created network in `data`.
 
-Erreurs :
+Errors:
 
 | Code | Condition |
 |------|-----------|
-| `400` | Corps JSON invalide, `name` manquant, clé de tag dupliquée |
-| `409` | `name` déjà utilisé |
+| `400` | Invalid JSON body, missing `name`, duplicate tag key |
+| `409` | `name` already in use |
 
 #### `GET /networks/{uuid}`
 
-Récupère un network par UUID.
+Gets a network by UUID.
 
-Réponse `200 OK` : le network dans `data`.
+`200 OK` response: the network in `data`.
 
-Erreurs :
+Errors:
 
 | Code | Condition |
 |------|-----------|
-| `400` | UUID invalide |
-| `404` | Network introuvable |
+| `400` | Invalid UUID |
+| `404` | Network not found |
 
 #### `PUT /networks/{uuid}`
 
-Met à jour un network existant. Le corps de requête a la même forme que `POST /networks`.
+Updates an existing network. Request body has the same shape as `POST /networks`.
 
-Réponse `200 OK` : le network mis à jour dans `data`.
+`200 OK` response: the updated network in `data`.
 
-Erreurs :
+Errors:
 
 | Code | Condition |
 |------|-----------|
-| `400` | UUID ou corps invalide |
-| `404` | Network introuvable |
-| `409` | `name` déjà utilisé par un autre network |
+| `400` | Invalid UUID or body |
+| `404` | Network not found |
+| `409` | `name` already used by another network |
 
 #### `DELETE /networks/{uuid}`
 
-Supprime un network **uniquement s'il n'a pas de subnets enfants** (subnets dont le parent est ce network). Si au moins un subnet référence ce network comme parent, la suppression est refusée.
+Deletes a network **only if it has no child subnets** (subnets whose parent is this network). If at least one subnet references this network as parent, deletion is refused.
 
-Réponse `200 OK` :
+`200 OK` response:
 
 ```json
 {
@@ -411,40 +411,40 @@ Réponse `200 OK` :
 }
 ```
 
-Erreurs :
+Errors:
 
 | Code | Condition |
 |------|-----------|
-| `400` | UUID invalide |
-| `404` | Network introuvable |
-| `409` | Le network a des subnets enfants |
+| `400` | Invalid UUID |
+| `404` | Network not found |
+| `409` | Network has child subnets |
 
-### Couche service (`internal/service/network.go`)
+### Service layer (`internal/service/network.go`)
 
-`NetworkService` encapsule la logique métier des networks :
+`NetworkService` encapsulates network business logic:
 
-- Génération de l'UUID à la création
-- Validation du `name` (obligatoire, trim)
-- Unicité du `name` (vérification applicative avant insert/update)
-- Validation des tags (clés uniques)
-- **Protection à la suppression** : appel à `SubnetRepository.ListByParent` avec `parent.kind = network` ; si des subnets existent, retourne `ErrNetworkHasChildren` (HTTP 409)
+- UUID generation on create
+- `name` validation (required, trim)
+- `name` uniqueness (application check before insert/update)
+- Tag validation (unique keys)
+- **Delete protection**: calls `SubnetRepository.ListByParent` with `parent.kind = network`; if subnets exist, returns `ErrNetworkHasChildren` (HTTP 409)
 
 ### Subnets
 
-Toutes les routes subnets sont **scopées par network** (`{uuid}` = UUID du network). Le parent n'est **pas** fourni dans le corps de requête : il est implicite via l'URL.
+All subnet routes are **scoped by network** (`{uuid}` = network UUID). The parent is **not** provided in the request body: it is implicit via the URL.
 
-| Route | Parent implicite |
-|-------|------------------|
-| `POST /networks/{uuid}/subnets` | Le network `{uuid}` |
-| `POST /networks/{uuid}/subnets/{subnet_uuid}/subnets` | Le subnet `{subnet_uuid}` |
+| Route | Implicit parent |
+|-------|-----------------|
+| `POST /networks/{uuid}/subnets` | The network `{uuid}` |
+| `POST /networks/{uuid}/subnets/{subnet_uuid}/subnets` | The subnet `{subnet_uuid}` |
 
-Le champ `parent` reste présent dans les **réponses** JSON (immuable après création).
+The `parent` field remains in JSON **responses** (immutable after creation).
 
 #### `GET /networks/{uuid}/subnets`
 
-Liste tous les subnets appartenant au network, triés par nom.
+Lists all subnets belonging to the network, sorted by name.
 
-Réponse `200 OK` :
+`200 OK` response:
 
 ```json
 {
@@ -453,7 +453,7 @@ Réponse `200 OK` :
     {
       "uuid": "660e8400-e29b-41d4-a716-446655440001",
       "name": "dmz",
-      "description": "Subnet DMZ",
+      "description": "DMZ subnet",
       "prefix": 24,
       "address": "10.0.0.0",
       "type": "ipv4",
@@ -463,69 +463,69 @@ Réponse `200 OK` :
 }
 ```
 
-Erreurs :
+Errors:
 
 | Code | Condition |
 |------|-----------|
-| `400` | UUID network invalide |
-| `404` | Network introuvable |
+| `400` | Invalid network UUID |
+| `404` | Network not found |
 
 #### `POST /networks/{uuid}/subnets`
 
-Crée un subnet IPv4 **enfant direct du network**. L'UUID est généré côté serveur.
+Creates an IPv4 subnet as a **direct child of the network**. UUID is generated server-side.
 
-Corps de requête :
+Request body:
 
 ```json
 {
   "name": "dmz",
-  "description": "Subnet DMZ",
+  "description": "DMZ subnet",
   "prefix": 24,
   "address": "10.0.0.0",
   "type": "ipv4"
 }
 ```
 
-| Champ         | Requis | Description |
-|---------------|--------|-------------|
-| `name`        | oui    | Nom unique au sein du network |
-| `description` | non    | Texte libre |
-| `prefix`      | oui    | Longueur du prefix IPv4 (1–32) |
-| `address`     | oui    | Adresse réseau ou hôte (obligatoire car parent = network) |
-| `type`        | non    | `ipv4` (défaut) ; `ipv6` refusé pour l'instant |
+| Field         | Required | Description |
+|---------------|----------|-------------|
+| `name`        | yes      | Unique name within the network |
+| `description` | no       | Free-form text |
+| `prefix`      | yes      | IPv4 prefix length (1–32) |
+| `address`     | yes      | Network or host address (required because parent = network) |
+| `type`        | no       | `ipv4` (default); `ipv6` rejected for now |
 
-Règles métier :
+Business rules:
 
-- Pas d'overlap avec les autres subnets ayant le même parent (le network)
-- Pas de contrainte CIDR parent (le network n'a pas d'espace d'adressage)
+- No overlap with other subnets sharing the same parent (the network)
+- No parent CIDR constraint (a network has no address space)
 
-Réponse `201 Created` : le subnet créé dans `data`.
+`201 Created` response: the created subnet in `data`.
 
-Erreurs :
+Errors:
 
 | Code | Condition |
 |------|-----------|
-| `400` | UUID network invalide, corps JSON invalide, champs requis manquants, adresse invalide |
-| `404` | Network introuvable |
-| `409` | Nom déjà utilisé, overlap avec un sibling |
+| `400` | Invalid network UUID, invalid JSON body, missing required fields, invalid address |
+| `404` | Network not found |
+| `409` | Name already in use, overlap with a sibling |
 
 #### `POST /networks/{uuid}/subnets/{subnet_uuid}/subnets`
 
-Crée un subnet IPv4 **enfant d'un subnet existant** dans le même network.
+Creates an IPv4 subnet as a **child of an existing subnet** in the same network.
 
-Corps de requête (adresse explicite) :
+Request body (explicit address):
 
 ```json
 {
   "name": "apps",
-  "description": "Subnet applicatif",
+  "description": "Application subnet",
   "prefix": 25,
   "address": "10.0.0.0",
   "type": "ipv4"
 }
 ```
 
-Corps de requête (adresse auto-générée — omettre `address`) :
+Request body (auto-generated address — omit `address`):
 
 ```json
 {
@@ -535,80 +535,80 @@ Corps de requête (adresse auto-générée — omettre `address`) :
 }
 ```
 
-| Champ         | Requis | Description |
-|---------------|--------|-------------|
-| `name`        | oui    | Nom unique au sein du network |
-| `description` | non    | Texte libre |
-| `prefix`      | oui    | Longueur du prefix IPv4 (1–32), plus spécifique que le parent |
-| `address`     | non    | Auto-générée si absente, dans le CIDR du parent |
-| `type`        | non    | `ipv4` (défaut) |
+| Field         | Required | Description |
+|---------------|----------|-------------|
+| `name`        | yes      | Unique name within the network |
+| `description` | no       | Free-form text |
+| `prefix`      | yes      | IPv4 prefix length (1–32), more specific than the parent |
+| `address`     | no       | Auto-generated if absent, within the parent CIDR |
+| `type`        | no       | `ipv4` (default) |
 
-Règles métier :
+Business rules:
 
-- Le subnet parent doit appartenir au network `{uuid}`
-- L'adresse (explicite ou générée) doit appartenir au CIDR du parent
-- Pas d'overlap entre siblings du même parent subnet
+- The parent subnet must belong to network `{uuid}`
+- The address (explicit or generated) must belong to the parent CIDR
+- No overlap among siblings of the same parent subnet
 
-Erreurs :
+Errors:
 
 | Code | Condition |
 |------|-----------|
-| `400` | UUID invalides, adresse invalide, subnet hors CIDR parent, prefix trop large |
-| `404` | Network ou subnet parent introuvable dans ce network |
-| `409` | Nom déjà utilisé, overlap, aucune adresse libre |
+| `400` | Invalid UUIDs, invalid address, subnet outside parent CIDR, prefix too broad |
+| `404` | Network or parent subnet not found in this network |
+| `409` | Name already in use, overlap, no free address |
 
 #### `GET /networks/{uuid}/subnets/{subnet_uuid}/subnets`
 
-Liste les subnets enfants directs d'un subnet parent.
+Lists direct child subnets of a parent subnet.
 
-Réponse `200 OK` : tableau de subnets dans `data`.
+`200 OK` response: array of subnets in `data`.
 
-Erreurs :
+Errors:
 
 | Code | Condition |
 |------|-----------|
-| `400` | UUID invalides |
-| `404` | Network ou subnet parent introuvable dans ce network |
+| `400` | Invalid UUIDs |
+| `404` | Network or parent subnet not found in this network |
 
 #### `GET /networks/{uuid}/subnets/{subnet_uuid}`
 
-Récupère un subnet par UUID, en vérifiant qu'il appartient au network.
+Gets a subnet by UUID, verifying it belongs to the network.
 
-Réponse `200 OK` : le subnet dans `data`.
+`200 OK` response: the subnet in `data`.
 
-Erreurs :
+Errors:
 
 | Code | Condition |
 |------|-----------|
-| `400` | UUID invalides |
-| `404` | Network introuvable, ou subnet introuvable dans ce network |
+| `400` | Invalid UUIDs |
+| `404` | Network not found, or subnet not found in this network |
 
 #### `PUT /networks/{uuid}/subnets/{subnet_uuid}`
 
-Met à jour **uniquement** la `description`. Les champs `name`, `prefix`, `address`, `type` et `parent` sont immuables.
+Updates **only** the `description`. Fields `name`, `prefix`, `address`, `type`, and `parent` are immutable.
 
-Corps de requête :
+Request body:
 
 ```json
 {
-  "description": "Nouvelle description"
+  "description": "New description"
 }
 ```
 
-Réponse `200 OK` : le subnet mis à jour dans `data`.
+`200 OK` response: the updated subnet in `data`.
 
-Erreurs :
+Errors:
 
 | Code | Condition |
 |------|-----------|
-| `400` | UUID invalides ou corps invalide |
-| `404` | Network introuvable, ou subnet introuvable dans ce network |
+| `400` | Invalid UUIDs or body |
+| `404` | Network not found, or subnet not found in this network |
 
 #### `DELETE /networks/{uuid}/subnets/{subnet_uuid}`
 
-Supprime un subnet **uniquement s'il n'a pas de subnets enfants**.
+Deletes a subnet **only if it has no child subnets**.
 
-Réponse `200 OK` :
+`200 OK` response:
 
 ```json
 {
@@ -617,53 +617,53 @@ Réponse `200 OK` :
 }
 ```
 
-Erreurs :
+Errors:
 
 | Code | Condition |
 |------|-----------|
-| `400` | UUID invalides |
-| `404` | Network introuvable, ou subnet introuvable dans ce network |
-| `409` | Le subnet a des subnets enfants |
+| `400` | Invalid UUIDs |
+| `404` | Network not found, or subnet not found in this network |
+| `409` | Subnet has child subnets |
 
-### Couche service (`internal/service/subnet.go`)
+### Service layer (`internal/service/subnet.go`)
 
-`SubnetService` encapsule la logique métier des subnets IPv4 :
+`SubnetService` encapsulates IPv4 subnet business logic:
 
-- **Scoping tenancy** : chaque opération reçoit le `networkUUID` et vérifie l'appartenance via `ensureInNetwork`
-- Génération de l'UUID à la création
-- Validation du `name` (obligatoire, trim, unicité au sein du network)
-- Parent implicite dérivé de l'URL (`CreateInNetwork`)
-- Normalisation de l'adresse IPv4 (ex. `192.168.1.5/24` → `192.168.1.0/24`)
-- Détection d'overlap entre siblings via `internal/iputil`
-- Génération automatique d'adresse dans le CIDR du parent subnet (uniquement si `address` est absent)
-- **Mise à jour limitée** : seule la `description` est modifiable
-- **Protection à la suppression** : refus si des subnets enfants existent (`ErrSubnetHasChildren`, HTTP 409)
+- **Tenancy scoping**: every operation receives `networkUUID` and verifies membership via `ensureInNetwork`
+- UUID generation on create
+- `name` validation (required, trim, unique within the network)
+- Implicit parent derived from the URL (`CreateInNetwork`)
+- IPv4 address normalization (e.g. `192.168.1.5/24` → `192.168.1.0/24`)
+- Sibling overlap detection via `internal/iputil`
+- Automatic address generation within the parent subnet CIDR (only when `address` is absent)
+- **Limited updates**: only `description` is modifiable
+- **Delete protection**: refused if child subnets exist (`ErrSubnetHasChildren`, HTTP 409)
 
 ## Configuration
 
-| Variable           | Défaut              | Description |
+| Variable           | Default             | Description |
 |--------------------|---------------------|-------------|
-| `KILHOG_HOST`      | `0.0.0.0`           | Adresse d'écoute HTTP |
-| `KILHOG_PORT`      | `8080`              | Port d'écoute HTTP |
-| `KILHOG_DB_DRIVER` | `sqlite`            | Driver de base : `sqlite` ou `postgres` |
-| `KILHOG_DB_DSN`    | `file:kilhog.db`    | DSN de connexion (voir exemples ci-dessous) |
-| `KILHOG_AUTO_MIGRATE` | `true`           | Appliquer les migrations upgrade au démarrage |
+| `KILHOG_HOST`      | `0.0.0.0`           | HTTP listen address |
+| `KILHOG_PORT`      | `8080`              | HTTP listen port |
+| `KILHOG_DB_DRIVER` | `sqlite`            | Database driver: `sqlite` or `postgres` |
+| `KILHOG_DB_DSN`    | `file:kilhog.db`    | Connection DSN (see examples below) |
+| `KILHOG_AUTO_MIGRATE` | `true`           | Apply upgrade migrations at startup |
 
-### Exemples de DSN
+### DSN examples
 
-| Driver   | DSN exemple |
+| Driver   | Example DSN |
 |----------|-------------|
 | SQLite   | `file:./data/kilhog.db?_pragma=foreign_keys(ON)` |
 | PostgreSQL | `postgres://user:pass@localhost:5432/kilhog?sslmode=disable` |
 
-## Format des réponses JSON
+## JSON response format
 
-- Succès : `{"status": "success", "data": ...}`
-- Erreur : `{"status": "error", "message": "...", "code": 400}`
+- Success: `{"status": "success", "data": ...}`
+- Error: `{"status": "error", "message": "...", "code": 400}`
 
-Les messages d'erreur de conflit (`409`) et de validation (`400`) sont **explicites** : ils incluent les valeurs en cause (nom, CIDR, prefix, etc.) pour faciliter le diagnostic côté client.
+Conflict (`409`) and validation (`400`) error messages are **explicit**: they include the values involved (name, CIDR, prefix, etc.) to help client-side diagnosis.
 
-Exemple — nom de subnet déjà utilisé :
+Example — subnet name already in use:
 
 ```json
 {
@@ -673,7 +673,7 @@ Exemple — nom de subnet déjà utilisé :
 }
 ```
 
-Exemple — overlap CIDR :
+Example — CIDR overlap:
 
 ```json
 {
@@ -689,64 +689,64 @@ Exemple — overlap CIDR :
 make build
 ```
 
-Compile le binaire dans `bin/kilhog` à partir de `./cmd/kilhog`.
+Compiles the binary to `bin/kilhog` from `./cmd/kilhog`.
 
 ## Run
 
-### Développement local (recommandé)
+### Local development (recommended)
 
 ```bash
 make run-dev
 ```
 
-Compile l'application puis la lance avec SQLite :
+Builds and runs the application with SQLite:
 
-- **Driver** : `sqlite`
-- **Fichier** : `kilhog.db` à la racine du projet (créé automatiquement au premier démarrage)
-- **Migrations** : appliquées automatiquement (`KILHOG_AUTO_MIGRATE=true` par défaut)
-- **Écoute** : `http://0.0.0.0:8080`
+- **Driver**: `sqlite`
+- **File**: `kilhog.db` at the project root (created automatically on first startup)
+- **Migrations**: applied automatically (`KILHOG_AUTO_MIGRATE=true` by default)
+- **Listen**: `http://0.0.0.0:8080`
 
-Le fichier `kilhog.db` (et ses fichiers auxiliaires SQLite `kilhog.db-wal`, `kilhog.db-shm`) est ignoré par Git (voir `.gitignore`).
+The `kilhog.db` file (and SQLite auxiliary files `kilhog.db-wal`, `kilhog.db-shm`) is ignored by Git (see `.gitignore`).
 
-### Lancement direct
+### Direct run
 
 ```bash
 go run ./cmd/kilhog
 ```
 
-Utilise les mêmes valeurs par défaut que `run-dev` (`sqlite`, DSN `file:kilhog.db?_pragma=foreign_keys(ON)`).
+Uses the same defaults as `run-dev` (`sqlite`, DSN `file:kilhog.db?_pragma=foreign_keys(ON)`).
 
-### Scripts HTTP de développement
+### Development HTTP scripts
 
-Le dossier `scripts/dev/` contient des scripts Bash autonomes qui appellent l'API REST sur une instance locale déjà démarrée (`make run-dev`). Chaque script lit un ou plusieurs fichiers JSON UTF-8 situés à côté de lui ; il n'y a pas de bibliothèque partagée entre scripts.
+The `scripts/dev/` folder contains standalone Bash scripts that call the REST API on a locally running instance (`make run-dev`). Each script reads one or more UTF-8 JSON files located next to it; there is no shared library between scripts.
 
-**Prérequis** : `curl`. Les scripts `update-network-hors-prod.sh` et `delete-network-prod.sh` utilisent aussi `jq` pour retrouver l'UUID d'un network par son `name`.
+**Prerequisites**: `curl`. Scripts `update-network-hors-prod.sh` and `delete-network-prod.sh` also use `jq` to look up a network UUID by `name`.
 
-| Variable | Défaut | Description |
-|----------|--------|-------------|
-| `KILHOG_BASE_URL` | `http://localhost:8080` | URL de base de l'API |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KILHOG_BASE_URL` | `http://localhost:8080` | API base URL |
 
-| Script | Fichier(s) JSON | Cible Make | Action |
-|--------|-----------------|------------|--------|
-| `create-networks.sh` | `network-prod.json`, `network-hors-prod.json` | `make dev-create-networks` | Crée `prod` et `hors-prod` |
-| `update-network-hors-prod.sh` | `network-hors-prod-update.json` | `make dev-update-network-hors-prod` | Met à jour `hors-prod` |
-| `delete-network-prod.sh` | — | `make dev-delete-network-prod` | Supprime `prod` |
-| `create-subnets.sh` | `subnet-dmz.json`, `subnet-apps-auto.json` | `make dev-create-subnets` | Crée `dmz` sous `hors-prod` (adresse explicite) puis `apps` sous `dmz` (adresse auto) |
-| `update-subnet-dmz.sh` | `subnet-dmz-update.json` | `make dev-update-subnet-dmz` | Met à jour la description de `dmz` |
-| `delete-subnet-apps.sh` | — | `make dev-delete-subnet-apps` | Supprime `apps` |
+| Script | JSON file(s) | Make target | Action |
+|--------|--------------|-------------|--------|
+| `create-networks.sh` | `network-prod.json`, `network-hors-prod.json` | `make dev-create-networks` | Creates `prod` and `hors-prod` |
+| `update-network-hors-prod.sh` | `network-hors-prod-update.json` | `make dev-update-network-hors-prod` | Updates `hors-prod` |
+| `delete-network-prod.sh` | — | `make dev-delete-network-prod` | Deletes `prod` |
+| `create-subnets.sh` | `subnet-dmz.json`, `subnet-apps-auto.json` | `make dev-create-subnets` | Creates `dmz` under `hors-prod` (explicit address) then `apps` under `dmz` (auto address) |
+| `update-subnet-dmz.sh` | `subnet-dmz-update.json` | `make dev-update-subnet-dmz` | Updates `dmz` description |
+| `delete-subnet-apps.sh` | — | `make dev-delete-subnet-apps` | Deletes `apps` |
 
-Contenu des payloads :
+Payload contents:
 
-| Fichier | `name` | `description` |
-|---------|--------|---------------|
-| `network-prod.json` | `prod` | `réseau de prod` |
-| `network-hors-prod.json` | `hors-prod` | *(absente)* |
-| `network-hors-prod-update.json` | `hors-prod` | `réseau de hors-prod` |
-| `subnet-dmz.json` | `dmz` | `Subnet DMZ avec adresse explicite 10.0.0.0/24` |
-| `subnet-apps-auto.json` | `apps` | `Subnet apps sous dmz, adresse auto-générée /25` |
-| `subnet-dmz-update.json` | — | `Subnet DMZ mis à jour` |
+| File | `name` | `description` |
+|------|--------|---------------|
+| `network-prod.json` | `prod` | `production network` |
+| `network-hors-prod.json` | `hors-prod` | *(absent)* |
+| `network-hors-prod-update.json` | `hors-prod` | `non-production network` |
+| `subnet-dmz.json` | `dmz` | `DMZ subnet with explicit address 10.0.0.0/24` |
+| `subnet-apps-auto.json` | `apps` | `Apps subnet under dmz, auto-generated /25 address` |
+| `subnet-dmz-update.json` | — | `Updated DMZ subnet` |
 
-Exemple d'enchaînement :
+Example workflow:
 
 ```bash
 # Terminal 1

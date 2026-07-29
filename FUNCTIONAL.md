@@ -1,83 +1,83 @@
 # FUNCTIONAL — kilhog
 
-## Présentation
+## Overview
 
-**kilhog** est une application **IPAM** (*IP Address Management*) : elle permet de gérer des pools et des adresses IP.
+**kilhog** is an **IPAM** (*IP Address Management*) application: it manages IP pools and addresses.
 
-Son nom reprend une traduction anglais–français–breton :
+Its name comes from an English–French–Breton word chain:
 
-| Langue   | Mot    |
+| Language | Word   |
 |----------|--------|
-| Anglais  | pool   |
-| Français | poule  |
+| English  | pool   |
+| French   | poule  |
 | Breton   | kilhog |
 
-En breton, **kilhog** signifie *coq* : un coq qui gère les poules (les pools).
+In Breton, **kilhog** means *rooster*: a rooster that manages the hens (the pools).
 
-## Modèle unifié : le subnet
+## Unified model: the subnet
 
-Dans kilhog, **tout espace d'adressage ou adresse IP est modélisé comme un subnet**.
+In kilhog, **every address space or IP address is modeled as a subnet**.
 
-- Un CIDR block (ex. `192.168.1.0/24`) est un subnet.
-- Une adresse IP individuelle (ex. `192.168.1.42`) est également un subnet, avec un prefix **`/32`** (IPv4) ou **`/128`** (IPv6).
+- A CIDR block (e.g. `192.168.1.0/24`) is a subnet.
+- An individual IP address (e.g. `192.168.1.42`) is also a subnet, with prefix **`/32`** (IPv4) or **`/128`** (IPv6).
 
-Il n'existe pas d'entité `IP` distincte du subnet : une IP est un **leaf subnet**.
+There is no separate `IP` entity: an IP is a **leaf subnet**.
 
-## Entité : Network
+## Entity: Network
 
-Un **network** apporte une notion de **tenancy** (périmètre d'isolation logique). C'est le conteneur racine au sein duquel s'organisent les subnets.
-
-### Attributes
-
-| Attribute     | Required | Description |
-|---------------|----------|-------------|
-| `uuid`        | yes      | Unique identifier. Clé de liaison avec le reste du système. Unique dans toute la database. |
-| `name`        | yes      | Display name. Unique dans toute la database. |
-| `description` | no       | Texte libre descriptif. |
-| `tags`        | no       | Liste de paires key–value (`key`, `value`). |
-
-## Entité : Subnet
-
-Un **subnet** représente un espace d'adressage IP (block ou adresse unique).
+A **network** provides **tenancy** (logical isolation boundary). It is the root container within which subnets are organized.
 
 ### Attributes
 
 | Attribute     | Required | Description |
 |---------------|----------|-------------|
-| `uuid`        | yes      | Unique identifier. Clé de liaison avec le reste du système. Unique dans toute la database. |
-| `name`        | yes      | Display name. Unique au sein du network (tenancy) auquel il appartient. |
-| `description` | no       | Texte libre descriptif. |
-| `prefix`      | yes      | Prefix length (ex. `24` pour un `/24`). |
-| `address`     | conditional | Network or host address (ex. `192.168.1.0`, `192.168.1.42`). **Required** when the parent is a network. Optional when the parent is a subnet (auto-generated if absent). |
-| `type`        | yes      | Address family : `ipv4` ou `ipv6`. |
-| `parent`      | yes      | Reference to the subnet parent (voir ci-dessous). |
-| `tags`        | no       | Liste de paires key–value (`key`, `value`). |
+| `uuid`        | yes      | Unique identifier. Link key with the rest of the system. Unique across the database. |
+| `name`        | yes      | Display name. Unique across the database. |
+| `description` | no       | Free-form descriptive text. |
+| `tags`        | no       | List of key–value pairs (`key`, `value`). |
+
+## Entity: Subnet
+
+A **subnet** represents an IP address space (block or single address).
+
+### Attributes
+
+| Attribute     | Required | Description |
+|---------------|----------|-------------|
+| `uuid`        | yes      | Unique identifier. Link key with the rest of the system. Unique across the database. |
+| `name`        | yes      | Display name. Unique within the network (tenancy) it belongs to. |
+| `description` | no       | Free-form descriptive text. |
+| `prefix`      | yes      | Prefix length (e.g. `24` for a `/24`). |
+| `address`     | conditional | Network or host address (e.g. `192.168.1.0`, `192.168.1.42`). **Required** when the parent is a network. Optional when the parent is a subnet (auto-generated if absent). |
+| `type`        | yes      | Address family: `ipv4` or `ipv6`. |
+| `parent`      | yes      | Reference to the subnet parent (see below). |
+| `tags`        | no       | List of key–value pairs (`key`, `value`). |
 
 ### Parent
 
-Le champ `parent` indique la position du subnet dans la hiérarchie. Il peut référencer :
+The `parent` field indicates the subnet's position in the hierarchy. It may reference:
 
-1. **Un network** — le subnet est un enfant direct du périmètre de tenancy.
-2. **Un autre subnet** — le subnet est imbriqué dans un address space plus large.
+1. **A network** — the subnet is a direct child of the tenancy boundary.
+2. **Another subnet** — the subnet is nested within a larger address space.
 
-Un subnet appartient toujours, directement ou indirectement, à un unique root network.
+A subnet always belongs, directly or indirectly, to a single root network.
 
-### Création
+### Creation
 
-Lors de la création d'un subnet :
+When creating a subnet:
 
-- Si le parent est un **network**, le champ `address` est **obligatoire**.
-- Si le parent est un **subnet**, `address` est optionnel : s'il est absent, une adresse est générée automatiquement dans le CIDR du parent, sans overlap avec les siblings.
+- If the parent is a **network**, the `address` field is **required**.
+- If the parent is a **subnet**, `address` is optional: if absent, an address is automatically generated within the parent CIDR, with no overlap among siblings.
 
-### Méthode `CIDR`
+### `CIDR` method
 
-Chaque subnet expose une méthode **`CIDR`** qui retourne la notation CIDR en concaténant l'address et le prefix :
+Each subnet exposes a **`CIDR`** method that returns CIDR notation by concatenating address and prefix:
 
 ```
 {address}/{prefix}
 ```
 
-Exemples :
+Examples:
 
 - `address = 192.168.1.0`, `prefix = 24` → `192.168.1.0/24`
 - `address = 192.168.1.42`, `prefix = 32` → `192.168.1.42/32`
@@ -85,10 +85,10 @@ Exemples :
 
 ## Tags
 
-Les tags sont des metadata libres sous forme de paires **key–value** attachées à un network ou à un subnet.
+Tags are free-form metadata as **key–value** pairs attached to a network or subnet.
 
-- Une key peut apparaître une seule fois par resource.
-- La value est une chaîne de caractères.
+- A key may appear only once per resource.
+- The value is a string.
 
 ## Uniqueness rules
 
@@ -99,53 +99,53 @@ Les tags sont des metadata libres sous forme de paires **key–value** attachée
 | Subnet   | `uuid` | Database         |
 | Subnet   | `name` | Network (tenancy)|
 
-## Persistance
+## Persistence
 
-Les données métier (networks, subnets, tags) sont persistées dans une **base de données relationnelle**. La couche de persistance est **abstraite** : l'application supporte plusieurs moteurs sans changer le modèle métier ni les règles ci-dessus.
+Business data (networks, subnets, tags) is persisted in a **relational database**. The persistence layer is **abstracted**: the application supports multiple engines without changing the business model or the rules above.
 
-### Moteurs supportés
+### Supported engines
 
-| Moteur     | Usage typique                          |
-|------------|----------------------------------------|
-| SQLite     | Développement local, déploiement léger |
-| PostgreSQL | Production, multi-instances            |
+| Engine     | Typical use                     |
+|------------|---------------------------------|
+| SQLite     | Local development, lightweight deployment |
+| PostgreSQL | Production, multi-instance      |
 
-Le choix du moteur est une **configuration de déploiement**, pas une règle métier. Les contraintes d'unicité et de hiérarchie s'appliquent de la même manière quel que soit le backend.
+The engine choice is a **deployment configuration**, not a business rule. Uniqueness and hierarchy constraints apply the same way regardless of backend.
 
-### Création automatique de la base
+### Automatic database creation
 
-Si la base de données cible **n'existe pas encore**, l'application peut la **créer au démarrage** avant d'exécuter les migrations :
+If the target database **does not exist yet**, the application may **create it at startup** before running migrations:
 
-- **SQLite** : création du fichier et des répertoires parents manquants.
-- **PostgreSQL** : création de la base via une connexion au catalogue `postgres` (ou équivalent).
+- **SQLite**: creates the file and any missing parent directories.
+- **PostgreSQL**: creates the database via a connection to the `postgres` catalog (or equivalent).
 
-Si la base existe déjà, l'application s'y connecte sans la recréer.
+If the database already exists, the application connects without recreating it.
 
-### Migrations SQL versionnées
+### Versioned SQL migrations
 
-Le schéma de la base est géré par des **migrations SQL numérotées**. Chaque version possède deux scripts :
+The database schema is managed by **numbered SQL migrations**. Each version has two scripts:
 
-- **upgrade** — applique les changements vers la version suivante ;
-- **downgrade** — annule ces changements et revient à la version précédente.
+- **upgrade** — applies changes to the next version;
+- **downgrade** — reverts those changes to the previous version.
 
-Règles :
+Rules:
 
-- Les migrations s'exécutent **dans l'ordre croissant** des numéros de version.
-- Une version déjà appliquée n'est **jamais rejouée**.
-- Au démarrage, l'application applique automatiquement les migrations **upgrade** manquantes.
-- Le **downgrade** est disponible pour revenir en arrière (opération explicite, pas automatique au démarrage).
+- Migrations run **in ascending order** of version numbers.
+- An already applied version is **never replayed**.
+- At startup, the application automatically applies missing **upgrade** migrations.
+- **Downgrade** is available to roll back (explicit operation, not automatic at startup).
 
-### Intégrité des données persistées
+### Persisted data integrity
 
-Les règles métier suivantes sont **garanties par le schéma** (contraintes SQL) :
+The following business rules are **enforced by the schema** (SQL constraints):
 
-| Règle | Mécanisme |
-|-------|-----------|
-| Unicité globale du `uuid` et du `name` d'un network | Contrainte `UNIQUE` |
-| Unicité globale du `uuid` d'un subnet | Clé primaire |
-| Unicité du `name` d'un subnet au sein d'un network | Contrainte `UNIQUE (network, name)` |
-| Un subnet appartient toujours à un network (tenancy) | Clé étrangère `network_uuid` |
-| Un tag a une seule value par key et par resource | Clé primaire `(resource, key)` |
-| Suppression d'un network | Supprime en cascade ses subnets et tags associés |
+| Rule | Mechanism |
+|------|-----------|
+| Global uniqueness of a network's `uuid` and `name` | `UNIQUE` constraint |
+| Global uniqueness of a subnet's `uuid` | Primary key |
+| Uniqueness of a subnet's `name` within a network | `UNIQUE (network, name)` constraint |
+| A subnet always belongs to a network (tenancy) | `network_uuid` foreign key |
+| A tag has a single value per key and per resource | Composite primary key `(resource, key)` |
+| Network deletion | Cascades to associated subnets and tags |
 
-Le détail des tables et colonnes est décrit dans `TECHNICAL.md`.
+Table and column details are described in `TECHNICAL.md`.
