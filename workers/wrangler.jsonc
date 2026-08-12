@@ -1,0 +1,21 @@
+{
+  "name": "kilhog",
+  "main": "./build/worker.mjs",
+  "compatibility_date": "2025-04-15",
+  "build": {
+    "command": "npm run build"
+  },
+  "vars": {
+    "KILHOG_DB_DRIVER": "d1",
+    "KILHOG_DB_DSN": "DB",
+    "KILHOG_AUTO_MIGRATE": "true",
+    "KILHOG_LOG_LEVEL": "info"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "kilhog",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ]
+}

@@ -4,3 +4,6 @@
 *.db-shm
 /data/
 scripts/dev/*.uuid
+workers/node_modules/
+workers/build/
+workers/.wrangler/

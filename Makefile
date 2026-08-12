@@ -1,9 +1,11 @@
 APP_NAME := kilhog
 CLI_NAME := pogig
+WORKER_NAME := kilhog-worker
 BIN_DIR := bin
 BIN := $(BIN_DIR)/$(APP_NAME)
 CLI_BIN := $(BIN_DIR)/$(CLI_NAME)
 DEV_DB_DSN := file:kilhog.db?_pragma=foreign_keys(ON)
+WORKERS_DIR := workers
 
 # Local development API credentials (override on the command line).
 # Disable auth: make run-dev KILHOG_API_KEY=
@@ -14,7 +16,10 @@ KILHOG_CLIENT_ENV = KILHOG_BASE_URL='$(KILHOG_BASE_URL)' KILHOG_API_KEY='$(KILHO
 
 DOCKER_IMAGE ?= kilhog:local
 
-.PHONY: build build-pogig build-all docker-build test vet ci run-dev dev-create-networks dev-update-network-hors-prod dev-delete-network-prod dev-create-subnets dev-update-subnet-dmz dev-delete-subnet-apps
+.PHONY: build build-pogig build-all build-wasm docker-build worker-dev worker-deploy worker-install \
+	test vet ci run-dev \
+	dev-create-networks dev-update-network-hors-prod dev-delete-network-prod \
+	dev-create-subnets dev-update-subnet-dmz dev-delete-subnet-apps
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -28,6 +33,19 @@ build-all: build build-pogig
 
 docker-build:
 	docker build -t $(DOCKER_IMAGE) .
+
+# Compile the API as WebAssembly for Cloudflare Workers (assets under workers/build/).
+build-wasm:
+	cd $(WORKERS_DIR) && npm run build
+
+worker-install:
+	cd $(WORKERS_DIR) && npm install
+
+worker-dev: worker-install
+	cd $(WORKERS_DIR) && npm run dev
+
+worker-deploy: worker-install
+	cd $(WORKERS_DIR) && npm run deploy
 
 vet:
 	go vet ./...

@@ -12,6 +12,7 @@
 kilhog/
 ├── cmd/
 │   ├── kilhog/          # API server entry point (main.go)
+│   ├── kilhog-worker/   # Cloudflare Workers WASM entry point (GOOS=js GOARCH=wasm)
 │   └── pogig/           # CLI entry point (Breton for "chick")
 │       └── internal/cmd/ # Cobra commands (network, subnet, health)
 ├── pkg/
@@ -23,12 +24,14 @@ kilhog/
 │   ├── service/         # Business logic and repository interfaces
 │   ├── repository/      # Data access, migrations, SQL drivers
 │   │   ├── migration/   # Versioned migration runner (upgrade / downgrade)
-│   │   ├── postgres/    # PostgreSQL implementation
-│   │   └── sqlite/      # SQLite implementation
+│   │   ├── postgres/    # PostgreSQL implementation (native builds only)
+│   │   ├── sqlite/      # SQLite implementation (native builds only)
+│   │   └── d1/          # Cloudflare D1 implementation (WASM / Workers builds)
 │   └── model/           # Models and data structures
 ├── .github/
 │   └── workflows/       # GitHub Actions CI/CD pipelines
 ├── migrations/          # Embedded versioned SQL scripts (sqlite/ and postgres/)
+├── workers/             # Cloudflare Workers project (Wrangler, WASM build assets)
 ├── scripts/
 │   └── dev/             # HTTP scripts for local development
 ├── Dockerfile           # Multi-stage build → scratch image for the API server
@@ -103,21 +106,24 @@ Interfaces defined on the service side (consumed by business logic):
 
 ## Persistence layer (`internal/repository`)
 
-**Configurable, abstract** data backend. Two drivers are supported: **SQLite** and **PostgreSQL**. The service consumes repository interfaces; driver choice is transparent to business logic.
+**Configurable, abstract** data backend. Three drivers are supported: **SQLite**, **PostgreSQL**, and **Cloudflare D1** (Workers / WASM). The service consumes repository interfaces; driver choice is transparent to business logic.
 
 ### Abstraction
 
 ```
 service (NetworkRepository, SubnetRepository)
     └── repository/
-            ├── sqlite/    → SQLite implementations
-            ├── postgres/  → PostgreSQL implementations
-            └── migration/ → migration runner (shared by both drivers)
+            ├── sqlite/    → SQLite implementations (native)
+            ├── postgres/  → PostgreSQL implementations (native)
+            ├── d1/        → Cloudflare D1 (WASM / Workers)
+            └── migration/ → migration runner (shared; D1 reuses SQLite scripts)
 ```
 
 Each driver implements the interfaces defined in `internal/service`. SQL queries use adapted dialects where needed (UUID types, `TIMESTAMPTZ`, etc.).
 
 Concrete repository implementations live in `internal/repository/` (`network_repository.go`, `subnet_repository.go`) and are instantiated via `repository.Open`.
+
+Native builds (`GOOS` ≠ `js`) compile SQLite and PostgreSQL drivers only. WASM builds (`GOOS=js GOARCH=wasm`) compile the D1 driver only, keeping the Worker binary smaller.
 
 ### Concurrent access
 
@@ -136,6 +142,10 @@ Mutations (`Create`, `Update`, `Delete`) go through `WithWriteTx`: SQLite write 
 Subnet creation with auto-allocated addresses uses `SubnetRepository.CreateAtomically`: sibling listing, overlap validation, and insert run in the same write transaction. The parent row is locked (`SELECT … FOR UPDATE` on PostgreSQL; SQLite relies on the application write mutex) so parallel creates under the same parent cannot pick the same CIDR.
 
 On PostgreSQL, the SQLite application lock is disabled: concurrency is handled by MVCC and SQL transactions.
+
+### Cloudflare D1 notes
+
+D1 is SQLite-compatible and uses the embedded **SQLite** migration scripts. The Go D1 driver (`github.com/syumai/workers/cloudflare/d1`) does **not** support SQL `BEGIN`/`COMMIT`. For `DialectD1`, `Store.WithTx` therefore executes statements sequentially under the application write mutex (best-effort atomicity, not a real SQL transaction). Prefer low write concurrency on the Worker deployment.
 
 ### Connection and database creation
 
@@ -267,14 +277,16 @@ The `001_initial_schema.up.sql` script creates `schema_migrations`, `networks`, 
 
 ### Dialect differences
 
-| Aspect | SQLite | PostgreSQL |
-|--------|--------|------------|
-| UUID type | `TEXT` (canonical format) or `BLOB` | Native `UUID` |
-| Timestamps | `TEXT` ISO-8601 or `DATETIME` | `TIMESTAMPTZ` |
-| Database creation | File on disk | `CREATE DATABASE` via admin connection |
-| Go driver | `modernc.org/sqlite` or `mattn/go-sqlite3` | `jackc/pgx/v5` |
+| Aspect | SQLite | PostgreSQL | Cloudflare D1 |
+|--------|--------|------------|---------------|
+| UUID type | `TEXT` (canonical format) or `BLOB` | Native `UUID` | `TEXT` (SQLite scripts) |
+| Timestamps | `TEXT` ISO-8601 or `DATETIME` | `TIMESTAMPTZ` | Same as SQLite |
+| Database creation | File on disk | `CREATE DATABASE` via admin connection | Provisioned via Wrangler (`wrangler d1 create`) |
+| Go driver | `modernc.org/sqlite` | `jackc/pgx/v5` | `github.com/syumai/workers/cloudflare/d1` |
+| SQL transactions | Yes | Yes | No (driver limitation; see D1 notes) |
+| Build target | Native | Native | `GOOS=js GOARCH=wasm` |
 
-Migrations may contain dialect-specific sections if needed; otherwise SQL stays as portable as possible.
+Migrations may contain dialect-specific sections if needed; otherwise SQL stays as portable as possible. D1 loads the `sqlite/` migration folder via `Dialect.MigrationDialect()`.
 
 ## Dependencies
 
@@ -283,13 +295,14 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 | `github.com/google/uuid` | Resource `UUID` identifiers |
 | `github.com/spf13/cobra` | pogig CLI command tree |
 | `database/sql` | Standard Go SQL abstraction |
-| `modernc.org/sqlite` | SQLite driver (pure Go) |
-| `jackc/pgx/v5` | PostgreSQL driver |
+| `modernc.org/sqlite` | SQLite driver (pure Go, native builds) |
+| `jackc/pgx/v5` | PostgreSQL driver (native builds) |
 | `go.opentelemetry.io/otel` | OpenTelemetry metrics API |
 | `go.opentelemetry.io/otel/sdk` | MeterProvider / resource |
 | `go.opentelemetry.io/otel/exporters/prometheus` | Prometheus scrape exporter (OTel-compatible) |
 | `go.opentelemetry.io/contrib/instrumentation/runtime` | Go runtime system metrics |
 | `github.com/prometheus/client_golang` | Prometheus registry and `/metrics` HTTP handler |
+| `github.com/syumai/workers` | Cloudflare Workers HTTP + D1 (WASM builds) |
 
 ## API routes
 
@@ -756,14 +769,22 @@ Errors:
 
 | Variable           | Default             | Description |
 |--------------------|---------------------|-------------|
-| `KILHOG_HOST`      | `0.0.0.0`           | HTTP listen address |
-| `KILHOG_PORT`      | `8080`              | HTTP listen port |
+| `KILHOG_HOST`      | `0.0.0.0`           | HTTP listen address (native server only) |
+| `KILHOG_PORT`      | `8080`              | HTTP listen port (native server only) |
 | `KILHOG_LOG_LEVEL` | `info`              | Log level: `debug`, `info`, `warn`, `error`, or `off` |
 | `KILHOG_API_KEY`   | *(empty)*           | API key for protected routes; auth disabled when unset |
-| `KILHOG_DB_DRIVER` | `sqlite`            | Database driver: `sqlite` or `postgres` |
-| `KILHOG_DB_DSN`    | `file:kilhog.db`    | Connection DSN (see examples below) |
-| `KILHOG_AUTO_MIGRATE` | `true`           | Apply upgrade migrations at startup |
+| `KILHOG_DB_DRIVER` | `sqlite`            | Database driver: `sqlite`, `postgres`, or `d1` |
+| `KILHOG_DB_DSN`    | see below           | Connection DSN or D1 binding name |
+| `KILHOG_AUTO_MIGRATE` | `true`           | Apply upgrade migrations at startup (or first Worker request) |
 | `KILHOG_METRICS_REFRESH_INTERVAL` | `30s` | How often IPAM gauges are reconciled from `COUNT(*)`. `0` or `off` disables the loop (single-instance). Scrapes never query SQL. |
+
+Default `KILHOG_DB_DSN`:
+
+| Driver | Default DSN |
+|--------|-------------|
+| `sqlite` | `file:kilhog.db?_pragma=foreign_keys(ON)` |
+| `postgres` | *(none — must be set)* |
+| `d1` | `DB` (Wrangler D1 binding name) |
 
 ### Logging
 
@@ -785,6 +806,7 @@ Every HTTP request passes through `internal/log.HTTPMiddleware` (wired in `handl
 |----------|-------------|
 | SQLite   | `file:./data/kilhog.db?_pragma=foreign_keys(ON)` |
 | PostgreSQL | `postgres://user:pass@localhost:5432/kilhog?sslmode=disable` |
+| D1       | `DB` (must match the `binding` in `workers/wrangler.jsonc`) |
 
 ## JSON response format
 
@@ -818,14 +840,77 @@ Example — CIDR overlap:
 ```bash
 make build        # API server binary in bin/kilhog
 make build-pogig  # CLI binary in bin/pogig
-make build-all    # both binaries
+make build-all    # both native binaries
+make build-wasm   # Cloudflare Workers WASM bundle in workers/build/
 make docker-build # container image (kilhog:local)
 make vet          # go vet ./...
 make test         # go test ./...
 make ci           # vet + test + build-all (local equivalent of CI)
 ```
 
-Compiles the API server from `./cmd/kilhog` and the CLI from `./cmd/pogig`.
+Compiles the API server from `./cmd/kilhog`, the CLI from `./cmd/pogig`, and the Worker entry from `./cmd/kilhog-worker` (`GOOS=js GOARCH=wasm`).
+
+## Cloudflare Workers (WASM)
+
+kilhog can run on [Cloudflare Workers](https://workers.cloudflare.com/) by compiling the API to WebAssembly. Persistence uses **Cloudflare D1** (SQLite-compatible).
+
+### Layout
+
+```
+workers/
+├── package.json       # npm scripts: build, dev, deploy
+├── wrangler.jsonc     # Worker name, D1 binding, env vars
+├── schema.sql         # Optional manual D1 bootstrap (prefer auto-migrate)
+└── build/             # Generated: app.wasm, worker.mjs, runtime assets (gitignored)
+cmd/kilhog-worker/     # Go entry point using github.com/syumai/workers
+```
+
+### Prerequisites
+
+- Go 1.26+
+- Node.js + npm
+- Cloudflare account and Wrangler auth (`npx wrangler login`)
+
+### One-time D1 setup
+
+```bash
+cd workers
+npm install
+npx wrangler d1 create kilhog
+```
+
+Copy the printed `database_id` into `workers/wrangler.jsonc` (`d1_databases[0].database_id`). Keep the binding name `DB` (or change both Wrangler and `KILHOG_DB_DSN`).
+
+### Build, local preview, deploy
+
+```bash
+make worker-install   # npm install in workers/
+make build-wasm       # generate workers/build/app.wasm + loader
+make worker-dev       # wrangler dev (http://127.0.0.1:8787 by default)
+make worker-deploy    # wrangler deploy
+```
+
+Or from `workers/`:
+
+```bash
+npm run build
+npm start             # local Wrangler preview
+npm run deploy
+```
+
+### Worker configuration
+
+| Source | Keys |
+|--------|------|
+| `wrangler.jsonc` `vars` | `KILHOG_DB_DRIVER=d1`, `KILHOG_DB_DSN=DB`, `KILHOG_AUTO_MIGRATE`, `KILHOG_LOG_LEVEL` |
+| Wrangler secret (recommended) | `KILHOG_API_KEY` via `npx wrangler secret put KILHOG_API_KEY` |
+| D1 binding | `DB` → database `kilhog` |
+
+On the first request, the Worker opens D1, runs pending SQLite migrations when `KILHOG_AUTO_MIGRATE=true`, then serves the same REST routes as the native server.
+
+### Size limits
+
+Standard Go WASM binaries can be large. Cloudflare Workers limits are approximately **3 MB** (free) / **10 MB** (paid) for the compressed Worker. If the bundle exceeds the limit, reduce dependencies or evaluate TinyGo (not wired by default).
 
 ## CI/CD (GitHub Actions)
 
