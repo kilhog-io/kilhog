@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/kilhog-io/kilhog/internal/handler"
 	kilhoglog "github.com/kilhog-io/kilhog/internal/log"
@@ -66,18 +67,26 @@ func buildRouter() (http.Handler, error) {
 	}
 
 	apiKey := envOrDefault("KILHOG_API_KEY", "")
-
-	if apiKey != "" {
-		slog.Info("kilhog worker ready", "db", cfg.Driver, "api_key", "enabled")
-	} else {
-		slog.Info("kilhog worker ready", "db", cfg.Driver, "api_key", "missing")
+	authCfg := service.AuthConfig{
+		APIKey:         apiKey,
+		BootstrapToken: envOrDefault("KILHOG_BOOTSTRAP_TOKEN", ""),
+		PublicURL:      envOrDefault("KILHOG_PUBLIC_URL", ""),
+		SessionTTL:     sessionTTLFromEnv(),
 	}
+	authService := service.NewAuthService(repos.Users, repos.IdentityPools, repos.Sessions, repos.OIDCStates, authCfg)
+	userService := service.NewUserService(repos.Users)
+	poolService := service.NewIdentityPoolService(repos.IdentityPools)
+
+	slog.Info("kilhog worker ready", "db", cfg.Driver, "api_key", boolLabel(apiKey != ""))
 
 	return handler.NewRouter(handler.Dependencies{
-		Store:          repos.Store,
-		NetworkService: service.NewNetworkService(repos.Networks, repos.Subnets),
-		SubnetService:  service.NewSubnetService(repos.Subnets, repos.Networks),
-		APIKey:         apiKey,
+		Store:               repos.Store,
+		NetworkService:      service.NewNetworkService(repos.Networks, repos.Subnets),
+		SubnetService:       service.NewSubnetService(repos.Subnets, repos.Networks),
+		AuthService:         authService,
+		UserService:         userService,
+		IdentityPoolService: poolService,
+		APIKey:              apiKey,
 	}), nil
 }
 
@@ -114,4 +123,26 @@ func envOrDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func sessionTTLFromEnv() time.Duration {
+	raw := envOrDefault("KILHOG_SESSION_TTL", "")
+	if raw == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(raw); err == nil {
+		return time.Duration(secs) * time.Second
+	}
+	if d, err := time.ParseDuration(raw); err == nil {
+		return d
+	}
+	slog.Warn("invalid KILHOG_SESSION_TTL, using default", "value", raw)
+	return 0
+}
+
+func boolLabel(enabled bool) string {
+	if enabled {
+		return "enabled"
+	}
+	return "missing"
 }

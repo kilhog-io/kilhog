@@ -51,6 +51,9 @@ Technical modeling of `FUNCTIONAL.md`. See that file for business rules.
 | `Parent`       | `parent.go`        | Reference to a `network` or `subnet` parent |
 | `Network`      | `network.go`       | Tenancy container |
 | `Subnet`       | `subnet.go`        | IP address space (block or host) |
+| `LocalUser`    | `user.go`          | Local username/password account |
+| `IdentityPool` | `identity_pool.go` | OIDC identity pool configuration |
+| `Session`      | `session.go`       | Server-side session + OIDC login state |
 
 ### `Network`
 
@@ -95,6 +98,9 @@ Interfaces defined on the service side (consumed by business logic):
 - `NetworkRepository` — CRUD, listing, and `Count` of networks
 - `SubnetRepository` — CRUD, listing by network or by parent, and `Count`
 - `ResourceMetrics` — optional in-memory functional metrics (create/update/delete hooks); no SQL on scrape
+- `UserRepository` — local users
+- `IdentityPoolRepository` — OIDC identity pools
+- `SessionRepository` / `OIDCLoginStateRepository` — sessions and PKCE state
 
 ## IPv4 utilities (`internal/iputil`)
 
@@ -111,7 +117,7 @@ Interfaces defined on the service side (consumed by business logic):
 ### Abstraction
 
 ```
-service (NetworkRepository, SubnetRepository)
+service (NetworkRepository, SubnetRepository, UserRepository, IdentityPoolRepository, SessionRepository, …)
     └── repository/
             ├── sqlite/    → SQLite implementations (native)
             ├── postgres/  → PostgreSQL implementations (native)
@@ -188,7 +194,9 @@ Example (per-dialect structure):
 ```
 internal/repository/migration/migrations/sqlite/
 ├── 001_initial_schema.up.sql
-└── 001_initial_schema.down.sql
+├── 001_initial_schema.down.sql
+├── 002_auth.up.sql
+└── 002_auth.down.sql
 ```
 
 #### Tracking table: `schema_migrations`
@@ -275,6 +283,54 @@ networks (1) ──< subnets (N)
 
 The `001_initial_schema.up.sql` script creates `schema_migrations`, `networks`, `subnets`, and `tags` tables with the constraints above. The `001_initial_schema.down.sql` script drops these tables in reverse dependency order.
 
+#### Auth script (`002_auth`)
+
+Adds local users, OIDC identity pools, sessions, and OIDC login-state tables (see below).
+
+#### `local_users` table
+
+| Column          | Type          | Constraints | Maps to |
+|-----------------|---------------|-------------|---------|
+| `uuid`          | UUID          | PK          | `LocalUser.UUID` |
+| `username`      | TEXT          | NOT NULL, unique (case-insensitive) | `LocalUser.Username` |
+| `password_hash` | TEXT          | NOT NULL    | bcrypt hash (never returned by API) |
+| `display_name`  | TEXT          | NULL        | `LocalUser.DisplayName` |
+| `email`         | TEXT          | NULL        | `LocalUser.Email` |
+| `role`          | TEXT          | NOT NULL, CHECK IN (`admin`, `user`) | `LocalUser.Role` |
+| `enabled`       | BOOL/INT      | NOT NULL    | `LocalUser.Enabled` |
+| `created_at`    | TIMESTAMPTZ   | NOT NULL    | `LocalUser.CreatedAt` |
+| `updated_at`    | TIMESTAMPTZ   | NOT NULL    | `LocalUser.UpdatedAt` |
+
+#### `oidc_identity_pools` table
+
+| Column          | Type          | Constraints | Maps to |
+|-----------------|---------------|-------------|---------|
+| `uuid`          | UUID          | PK          | `IdentityPool.UUID` |
+| `name`          | TEXT          | NOT NULL, UNIQUE | `IdentityPool.Name` |
+| `slug`          | TEXT          | NOT NULL, UNIQUE | `IdentityPool.Slug` |
+| `issuer`        | TEXT          | NOT NULL, UNIQUE | `IdentityPool.Issuer` |
+| `client_id`     | TEXT          | NOT NULL    | `IdentityPool.ClientID` |
+| `client_secret` | TEXT          | NULL        | stored secret (never returned; `has_client_secret` exposed) |
+| `scopes`        | TEXT          | NOT NULL (JSON array) | `IdentityPool.Scopes` |
+| `enabled`       | BOOL/INT      | NOT NULL    | `IdentityPool.Enabled` |
+| `created_at` / `updated_at` | TIMESTAMPTZ | NOT NULL | timestamps |
+
+#### `sessions` table
+
+| Column | Description |
+|--------|-------------|
+| `uuid` | Session id |
+| `token_hash` | SHA-256 hex of opaque session token (UNIQUE) |
+| `principal_kind` | `local_user` or `oidc` |
+| `local_user_uuid` | FK → `local_users` (CASCADE) when kind is local |
+| `identity_pool_uuid` | FK → pools (SET NULL) when kind is OIDC |
+| `oidc_subject` / `oidc_email` / `oidc_name` | Federated claims |
+| `expires_at` | Session expiry |
+
+#### `oidc_login_states` table
+
+Short-lived PKCE/`state`/`nonce` rows for Authorization Code + PKCE (TTL ~10 minutes). Consumed atomically on callback (`Take`).
+
 ### Dialect differences
 
 | Aspect | SQLite | PostgreSQL | Cloudflare D1 |
@@ -303,6 +359,9 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 | `go.opentelemetry.io/contrib/instrumentation/runtime` | Go runtime system metrics |
 | `github.com/prometheus/client_golang` | Prometheus registry and `/metrics` HTTP handler |
 | `github.com/syumai/workers` | Cloudflare Workers HTTP + D1 (WASM builds) |
+| `github.com/coreos/go-oidc/v3` | OIDC ID token verification |
+| `golang.org/x/oauth2` | OIDC Authorization Code + PKCE |
+| `golang.org/x/crypto` | bcrypt password hashing |
 
 ## API routes
 
@@ -310,6 +369,17 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 |--------|---------------------|---------------|-------------|
 | GET     | `/healthz`          | no            | Server health (includes database ping) |
 | GET     | `/metrics`          | no            | OpenTelemetry metrics in Prometheus exposition format |
+| GET     | `/auth/status`      | no            | Auth configuration / bootstrap availability |
+| POST    | `/auth/bootstrap`   | no*           | Create primo-admin when no local user exists |
+| POST    | `/auth/login`       | no            | Local username/password login |
+| POST    | `/auth/logout`      | no            | End session (cookie / bearer token) |
+| GET     | `/auth/me`          | yes*          | Current principal |
+| GET     | `/auth/oidc/pools`  | no            | List enabled OIDC pools (name + slug) |
+| GET     | `/auth/oidc/{slug}/login` | no      | Start OIDC Authorization Code + PKCE |
+| GET     | `/auth/oidc/callback` | no          | OIDC callback; issues session |
+| GET/POST/PUT/DELETE | `/users…` | admin | Local user administration |
+| POST    | `/users/me/password`| local user    | Change own password |
+| GET/POST/PUT/DELETE | `/auth/identity-pools…` | admin | OIDC pool administration |
 | GET     | `/networks`         | yes*          | List all networks |
 | POST    | `/networks`         | yes*          | Create a network |
 | GET     | `/networks/{uuid}`  | yes*          | Get a network by UUID |
@@ -323,44 +393,52 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 | GET     | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | yes* | List child subnets of a subnet |
 | POST    | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | yes* | Create a child subnet of a subnet |
 
-> \* Auth is always required on functional routes. When `KILHOG_API_KEY` is empty or unset, those routes return `403 Forbidden`. `GET /healthz` and `GET /metrics` stay public.
+> \* Protected IPAM and admin routes require authentication. Auth is configured when at least one of: non-empty `KILHOG_API_KEY`, ≥1 local user, or ≥1 enabled OIDC pool. Otherwise protected routes return `403`. Invalid credentials return `401`. `GET /healthz`, `GET /metrics`, and public auth discovery/login routes stay reachable without a session.
 
 > **Tenancy**: all subnet operations go through `/networks/{uuid}/…`. The network `uuid` in the URL is the isolation boundary; the server verifies that each subnet belongs to that network (directly or via the parent hierarchy).
 
 ### Authentication
 
-API key protection is always enforced on functional routes (everything except `GET /healthz` and `GET /metrics`).
+Three methods are accepted (OR semantics). See `FUNCTIONAL.md` for business rules.
 
-| Aspect | Behavior |
-|--------|----------|
-| Scope | All routes except `GET /healthz` and `GET /metrics` (health and Prometheus scrapes stay public) |
-| Configured | When `KILHOG_API_KEY` is a non-empty value |
-| Not configured | When `KILHOG_API_KEY` is empty or unset → functional routes return `403 Forbidden` |
-| Comparison | Constant-time (`crypto/subtle`) to reduce timing leaks |
+| Method | How presented | Notes |
+|--------|---------------|-------|
+| API key | `Authorization: Bearer <key>` or `X-API-Key` | Shared secret from `KILHOG_API_KEY`; IPAM access only (not user/pool admin) |
+| Local session | `Authorization: Bearer <session_token>` or cookie `kilhog_session` | Issued by `/auth/bootstrap` or `/auth/login` |
+| OIDC | Session after code flow, or Bearer JWT validated against an enabled pool | Admin of users/pools requires a local `admin` account |
 
-Clients must send the key in one of these headers:
+`GET /healthz` and `GET /metrics` stay public (health probes and Prometheus scrapes).
 
-| Header | Format |
-|--------|--------|
-| `Authorization` | `Bearer <api_key>` |
-| `X-API-Key` | `<api_key>` |
+#### Bootstrap (primo-admin)
 
-Missing or invalid credentials (key is configured):
+`POST /auth/bootstrap` is allowed only while `local_users` is empty. Creates an `admin` and returns a session. Optional `KILHOG_BOOTSTRAP_TOKEN` must match body `bootstrap_token` or header `X-Bootstrap-Token` when set.
+
+#### Sessions
+
+Opaque tokens (32 random bytes, base64url) stored as SHA-256 hashes. Default TTL 24h (`KILHOG_SESSION_TTL`). Logout deletes the hash and clears the cookie. Disabling/deleting an OIDC pool stops new logins; existing sessions remain until expiry.
+
+#### OIDC
+
+- Requires `KILHOG_PUBLIC_URL` (redirect URI = `{KILHOG_PUBLIC_URL}/auth/oidc/callback`).
+- Flow: Authorization Code + PKCE via `GET /auth/oidc/{slug}/login` → IdP → `/auth/oidc/callback`.
+- Dependencies: `github.com/coreos/go-oidc/v3`, `golang.org/x/oauth2`, `golang.org/x/crypto/bcrypt`.
+
+Missing or invalid credentials when auth is configured:
 
 ```json
 {
   "status": "error",
-  "message": "missing or invalid API key",
+  "message": "missing or invalid credentials",
   "code": 401
 }
 ```
 
-API key not configured on the server:
+Authentication not configured:
 
 ```json
 {
   "status": "error",
-  "message": "API key authentication is not configured",
+  "message": "authentication is not configured",
   "code": 403
 }
 ```
@@ -783,7 +861,10 @@ Errors:
 | `KILHOG_HOST`      | `0.0.0.0`           | HTTP listen address (native server only) |
 | `KILHOG_PORT`      | `8080`              | HTTP listen port (native server only) |
 | `KILHOG_LOG_LEVEL` | `info`              | Log level: `debug`, `info`, `warn`, `error`, or `off` |
-| `KILHOG_API_KEY`   | *(empty)*           | Required API key for functional routes; unset/empty → `403` on those routes |
+| `KILHOG_API_KEY`   | *(empty)*           | Shared API key for IPAM routes; one of the auth methods |
+| `KILHOG_BOOTSTRAP_TOKEN` | *(empty)*     | Optional secret required for `POST /auth/bootstrap` |
+| `KILHOG_PUBLIC_URL` | *(empty)*          | Public base URL for OIDC redirect URIs (no trailing slash) |
+| `KILHOG_SESSION_TTL` | `24h`             | Session lifetime (Go duration or integer seconds) |
 | `KILHOG_DB_DRIVER` | `sqlite`            | Database driver: `sqlite`, `postgres`, or `d1` |
 | `KILHOG_DB_DSN`    | see below           | Connection DSN or D1 binding name |
 | `KILHOG_AUTO_MIGRATE` | `true`           | Apply upgrade migrations at startup (or first Worker request) |
@@ -803,7 +884,7 @@ Logging uses the standard library `log/slog` with a text handler on stderr. Conf
 
 | Level   | HTTP requests | Other events |
 |---------|---------------|--------------|
-| `debug` | Method, path, status, duration, headers (API key redacted), request body, response body | Migration details, startup/shutdown |
+| `debug` | Method, path, status, duration, headers (`Authorization` / `X-API-Key` / `Cookie` redacted), request body, response body | Migration details, startup/shutdown |
 | `info`  | Method, path, status, duration (one line per request) | Startup, migrations applied, shutdown |
 | `warn`  | — | Warnings (e.g. database close failure) |
 | `error` | — | Fatal configuration or runtime errors |

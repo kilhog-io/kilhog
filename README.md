@@ -14,7 +14,7 @@ Its name comes from an English–French–Breton word chain: *pool* → *poule* 
 - Hierarchical IPv4 **subnet** management (CIDR blocks and host addresses)
 - CIDR validation: parent containment, overlap detection, automatic address allocation
 - **SQLite**, **PostgreSQL**, or **Cloudflare D1** persistence with versioned migrations
-- JSON REST API with optional API key authentication
+- JSON REST API with API key, local users (bootstrap admin), and multi-pool OIDC authentication
 - **pogig** CLI and **Go SDK** (`pkg/kilhog`) for programmatic access and Terraform integration
 - Cloudflare Workers WASM deployment (`make build-wasm`)
 - Ready for multi-tenancy and RBAC

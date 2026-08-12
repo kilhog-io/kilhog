@@ -11,9 +11,13 @@ import (
 )
 
 type Repositories struct {
-	Store    *db.Store
-	Networks service.NetworkRepository
-	Subnets  service.SubnetRepository
+	Store         *db.Store
+	Networks      service.NetworkRepository
+	Subnets       service.SubnetRepository
+	Users         service.UserRepository
+	IdentityPools service.IdentityPoolRepository
+	Sessions      service.SessionRepository
+	OIDCStates    service.OIDCLoginStateRepository
 }
 
 func Open(ctx context.Context, cfg db.Config) (*Repositories, error) {
@@ -32,9 +36,13 @@ func Open(ctx context.Context, cfg db.Config) (*Repositories, error) {
 	}
 
 	return &Repositories{
-		Store:    store,
-		Networks: NewNetworkRepository(store),
-		Subnets:  NewSubnetRepository(store),
+		Store:         store,
+		Networks:      NewNetworkRepository(store),
+		Subnets:       NewSubnetRepository(store),
+		Users:         NewUserRepository(store),
+		IdentityPools: NewIdentityPoolRepository(store),
+		Sessions:      NewSessionRepository(store),
+		OIDCStates:    NewOIDCLoginStateRepository(store),
 	}, nil
 }
 

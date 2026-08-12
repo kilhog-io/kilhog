@@ -1,6 +1,11 @@
 package handler
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/kilhog-io/kilhog/internal/repository"
+	"github.com/kilhog-io/kilhog/internal/service"
+)
 
 const handlerTestAPIKey = "handler-test-api-key"
 
@@ -11,6 +16,23 @@ func newAuthedTestRouter(deps Dependencies) http.Handler {
 		deps.APIKey = handlerTestAPIKey
 	}
 	return &autoAuthHandler{next: NewRouter(deps), apiKey: deps.APIKey}
+}
+
+func authDepsFromRepos(repos *repository.Repositories, apiKey string) Dependencies {
+	auth := service.NewAuthService(
+		repos.Users,
+		repos.IdentityPools,
+		repos.Sessions,
+		repos.OIDCStates,
+		service.AuthConfig{APIKey: apiKey},
+	)
+	return Dependencies{
+		Store:               repos.Store,
+		AuthService:         auth,
+		UserService:         service.NewUserService(repos.Users),
+		IdentityPoolService: service.NewIdentityPoolService(repos.IdentityPools),
+		APIKey:              apiKey,
+	}
 }
 
 type autoAuthHandler struct {
