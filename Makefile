@@ -8,7 +8,7 @@ DEV_DB_DSN := file:kilhog.db?_pragma=foreign_keys(ON)
 WORKERS_DIR := workers
 
 # Local development API credentials (override on the command line).
-# Disable auth: make run-dev KILHOG_API_KEY=
+# An empty server key rejects functional routes with HTTP 403.
 KILHOG_BASE_URL ?= http://localhost:8080
 KILHOG_API_KEY ?= dev-secret
 

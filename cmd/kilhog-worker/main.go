@@ -70,7 +70,7 @@ func buildRouter() (http.Handler, error) {
 	if apiKey != "" {
 		slog.Info("kilhog worker ready", "db", cfg.Driver, "api_key", "enabled")
 	} else {
-		slog.Info("kilhog worker ready", "db", cfg.Driver, "api_key", "disabled")
+		slog.Info("kilhog worker ready", "db", cfg.Driver, "api_key", "missing")
 	}
 
 	return handler.NewRouter(handler.Dependencies{

@@ -42,7 +42,7 @@ make dev-create-subnets
 KILHOG_API_KEY=dev-secret ./bin/pogig network list
 ```
 
-`make run-dev` enables API key auth with the default key `dev-secret`. Dev script targets pass the same key automatically. Disable auth with `make run-dev KILHOG_API_KEY=`.
+`make run-dev` enables API key auth with the default key `dev-secret`. Dev script targets pass the same key automatically. If the server key is empty, functional routes return `403`.
 
 Check that the API responds:
 

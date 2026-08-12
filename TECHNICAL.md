@@ -323,18 +323,19 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 | GET     | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | yes* | List child subnets of a subnet |
 | POST    | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | yes* | Create a child subnet of a subnet |
 
-> \* Auth is required when `KILHOG_API_KEY` is set. When the variable is empty or unset, all routes remain open (local development default).
+> \* Auth is always required on functional routes. When `KILHOG_API_KEY` is empty or unset, those routes return `403 Forbidden`. `GET /healthz` and `GET /metrics` stay public.
 
 > **Tenancy**: all subnet operations go through `/networks/{uuid}/…`. The network `uuid` in the URL is the isolation boundary; the server verifies that each subnet belongs to that network (directly or via the parent hierarchy).
 
 ### Authentication
 
-Minimal API key protection is enabled when the `KILHOG_API_KEY` environment variable is set to a non-empty value.
+API key protection is always enforced on functional routes (everything except `GET /healthz` and `GET /metrics`).
 
 | Aspect | Behavior |
 |--------|----------|
 | Scope | All routes except `GET /healthz` and `GET /metrics` (health and Prometheus scrapes stay public) |
-| Disabled | When `KILHOG_API_KEY` is empty or unset |
+| Configured | When `KILHOG_API_KEY` is a non-empty value |
+| Not configured | When `KILHOG_API_KEY` is empty or unset → functional routes return `403 Forbidden` |
 | Comparison | Constant-time (`crypto/subtle`) to reduce timing leaks |
 
 Clients must send the key in one of these headers:
@@ -344,13 +345,23 @@ Clients must send the key in one of these headers:
 | `Authorization` | `Bearer <api_key>` |
 | `X-API-Key` | `<api_key>` |
 
-Missing or invalid credentials:
+Missing or invalid credentials (key is configured):
 
 ```json
 {
   "status": "error",
   "message": "missing or invalid API key",
   "code": 401
+}
+```
+
+API key not configured on the server:
+
+```json
+{
+  "status": "error",
+  "message": "API key authentication is not configured",
+  "code": 403
 }
 ```
 
@@ -772,7 +783,7 @@ Errors:
 | `KILHOG_HOST`      | `0.0.0.0`           | HTTP listen address (native server only) |
 | `KILHOG_PORT`      | `8080`              | HTTP listen port (native server only) |
 | `KILHOG_LOG_LEVEL` | `info`              | Log level: `debug`, `info`, `warn`, `error`, or `off` |
-| `KILHOG_API_KEY`   | *(empty)*           | API key for protected routes; auth disabled when unset |
+| `KILHOG_API_KEY`   | *(empty)*           | Required API key for functional routes; unset/empty → `403` on those routes |
 | `KILHOG_DB_DRIVER` | `sqlite`            | Database driver: `sqlite`, `postgres`, or `d1` |
 | `KILHOG_DB_DSN`    | see below           | Connection DSN or D1 binding name |
 | `KILHOG_AUTO_MIGRATE` | `true`           | Apply upgrade migrations at startup (or first Worker request) |
@@ -1087,7 +1098,7 @@ Builds and runs the application with SQLite:
 - **File**: `kilhog.db` at the project root (created automatically on first startup)
 - **Migrations**: applied automatically (`KILHOG_AUTO_MIGRATE=true` by default)
 - **Listen**: `http://0.0.0.0:8080`
-- **API key**: `dev-secret` by default (`KILHOG_API_KEY` in the Makefile); disable with `make run-dev KILHOG_API_KEY=`
+- **API key**: `dev-secret` by default (`KILHOG_API_KEY` in the Makefile). Leaving it empty rejects functional routes with `403`.
 
 The `kilhog.db` file (and SQLite auxiliary files `kilhog.db-wal`, `kilhog.db-shm`) is ignored by Git (see `.gitignore`).
 
@@ -1098,7 +1109,7 @@ The `kilhog.db` file (and SQLite auxiliary files `kilhog.db-wal`, `kilhog.db-shm
 | `KILHOG_API_KEY` | `dev-secret` | `run-dev`, `dev-*` script targets |
 | `KILHOG_BASE_URL` | `http://localhost:8080` | `dev-*` script targets |
 
-Override on the command line, for example `make dev-create-networks KILHOG_API_KEY=other-secret`. When calling **pogig** directly, export the same key: `KILHOG_API_KEY=dev-secret ./bin/pogig network list`.
+Override on the command line, for example `make dev-create-networks KILHOG_API_KEY=other-secret`. When calling **pogig** directly, export the same key: `KILHOG_API_KEY=dev-secret ./bin/pogig network list`. If `KILHOG_API_KEY` is empty on the server, functional routes return `403`.
 
 ### Direct run
 
@@ -1117,9 +1128,9 @@ The `scripts/dev/` folder contains standalone Bash scripts that call the REST AP
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `KILHOG_BASE_URL` | `http://localhost:8080` | API base URL |
-| `KILHOG_API_KEY` | `dev-secret` (via Makefile) | API key sent as `Authorization: Bearer …`; empty disables auth on `run-dev` |
+| `KILHOG_API_KEY` | `dev-secret` (via Makefile) | API key sent as `Authorization: Bearer …`; server must have the same non-empty key |
 
-Make targets `run-dev` and `dev-*` inject these values automatically. Override with `make … KILHOG_API_KEY=other-secret` or disable auth with `make run-dev KILHOG_API_KEY=`.
+Make targets `run-dev` and `dev-*` inject these values automatically. Override with `make … KILHOG_API_KEY=other-secret`. An empty server key rejects functional routes with `403`.
 
 | Script | JSON file(s) | Make target | Action |
 |--------|--------------|-------------|--------|

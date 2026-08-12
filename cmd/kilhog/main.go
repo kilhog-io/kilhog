@@ -105,7 +105,7 @@ func main() {
 	if apiKey != "" {
 		slog.Info("kilhog listening", "addr", addr, "db", cfg.Driver, "api_key", "enabled")
 	} else {
-		slog.Info("kilhog listening", "addr", addr, "db", cfg.Driver, "api_key", "disabled")
+		slog.Info("kilhog listening", "addr", addr, "db", cfg.Driver, "api_key", "missing")
 	}
 
 	go func() {

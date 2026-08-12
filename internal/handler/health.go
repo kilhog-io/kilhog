@@ -32,10 +32,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		registerSubnetRoutes(protected, deps.SubnetService)
 	}
 
-	protectedHandler := http.Handler(protected)
-	if deps.APIKey != "" {
-		protectedHandler = apiKeyMiddleware(deps.APIKey, protected)
-	}
+	protectedHandler := apiKeyMiddleware(deps.APIKey, protected)
 	mux.Handle("/", protectedHandler)
 
 	var handler http.Handler = mux

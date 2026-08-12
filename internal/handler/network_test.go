@@ -18,7 +18,7 @@ import (
 func TestNetworkRoutes_Lifecycle(t *testing.T) {
 	repos := openHandlerRepositories(t)
 	svc := service.NewNetworkService(repos.Networks, repos.Subnets)
-	router := NewRouter(Dependencies{NetworkService: svc})
+	router := newAuthedTestRouter(Dependencies{NetworkService: svc})
 
 	createBody := map[string]any{
 		"name":        "lab",
@@ -93,7 +93,7 @@ func TestNetworkRoutes_Lifecycle(t *testing.T) {
 func TestNetworkRoutes_DeleteWithChildren(t *testing.T) {
 	repos := openHandlerRepositories(t)
 	svc := service.NewNetworkService(repos.Networks, repos.Subnets)
-	router := NewRouter(Dependencies{NetworkService: svc})
+	router := newAuthedTestRouter(Dependencies{NetworkService: svc})
 
 	network, err := svc.Create(t.Context(), service.CreateNetworkInput{Name: "protected"})
 	if err != nil {
@@ -127,7 +127,7 @@ func TestNetworkRoutes_DeleteWithChildren(t *testing.T) {
 func TestNetworkRoutes_NotFound(t *testing.T) {
 	repos := openHandlerRepositories(t)
 	svc := service.NewNetworkService(repos.Networks, repos.Subnets)
-	router := NewRouter(Dependencies{NetworkService: svc})
+	router := newAuthedTestRouter(Dependencies{NetworkService: svc})
 
 	id := uuid.New()
 	getReq := httptest.NewRequest(http.MethodGet, "/networks/"+id.String(), nil)

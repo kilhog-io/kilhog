@@ -86,16 +86,26 @@ func TestAPIKeyMiddleware(t *testing.T) {
 	}
 }
 
-func TestAPIKeyMiddleware_DisabledWhenEmpty(t *testing.T) {
+func TestAPIKeyMiddleware_ForbiddenWhenAPIKeyUnset(t *testing.T) {
 	repos := openHandlerRepositories(t)
 	svc := service.NewNetworkService(repos.Networks, repos.Subnets)
 	router := NewRouter(Dependencies{NetworkService: svc})
 
-	req := httptest.NewRequest(http.MethodGet, "/networks", nil)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
+	t.Run("healthz stays public", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status code = %d, want %d", rec.Code, http.StatusOK)
+		}
+	})
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status code = %d, want %d", rec.Code, http.StatusOK)
-	}
+	t.Run("functional route returns 403", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/networks", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status code = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+		}
+	})
 }

@@ -9,7 +9,7 @@ import (
 func apiKeyMiddleware(expectedKey string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if expectedKey == "" {
-			next.ServeHTTP(w, r)
+			writeError(w, http.StatusForbidden, "API key authentication is not configured")
 			return
 		}
 
