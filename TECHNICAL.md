@@ -25,6 +25,8 @@ kilhog/
 │   │   ├── postgres/    # PostgreSQL implementation
 │   │   └── sqlite/      # SQLite implementation
 │   └── model/           # Models and data structures
+├── .github/
+│   └── workflows/       # GitHub Actions CI/CD pipelines
 ├── migrations/          # Embedded versioned SQL scripts (sqlite/ and postgres/)
 ├── scripts/
 │   └── dev/             # HTTP scripts for local development
@@ -742,9 +744,30 @@ Example — CIDR overlap:
 make build        # API server binary in bin/kilhog
 make build-pogig  # CLI binary in bin/pogig
 make build-all    # both binaries
+make vet          # go vet ./...
+make test         # go test ./...
+make ci           # vet + test + build-all (local equivalent of CI)
 ```
 
 Compiles the API server from `./cmd/kilhog` and the CLI from `./cmd/pogig`.
+
+## CI/CD (GitHub Actions)
+
+Workflows live under `.github/workflows/`.
+
+| Workflow | File | Trigger | Purpose |
+|----------|------|---------|---------|
+| **CI** | `ci.yml` | Push and pull requests to `main` | `go vet`, `go test ./...`, `make build-all`, then cross-compile smoke builds for linux/darwin/windows (amd64/arm64 where applicable) |
+| **Release** | `release.yml` | Push of tags matching `v*` | Re-run vet/tests, build release archives (`kilhog` + `pogig`) per OS/arch, publish a GitHub Release with `.tar.gz` / `.zip` assets and `checksums.txt` |
+
+Go version is taken from `go.mod` via `actions/setup-go` (`go-version-file`). Builds use `CGO_ENABLED=0` for portable static binaries.
+
+To publish a release:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
 
 ## Go SDK (`pkg/kilhog`)
 

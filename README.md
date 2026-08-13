@@ -62,8 +62,18 @@ make run-dev KILHOG_API_KEY=my-secret
 make build        # API server binary in bin/kilhog
 make build-pogig  # CLI binary in bin/pogig
 make build-all    # both binaries
-go test ./...     # run tests
+make test         # run tests
+make ci           # vet + test + build (same checks as GitHub Actions CI)
 ```
+
+## CI/CD
+
+GitHub Actions workflows:
+
+- **CI** (`.github/workflows/ci.yml`) — on push/PR to `main`: vet, test, build, and cross-compile smoke checks
+- **Release** (`.github/workflows/release.yml`) — on `v*` tags: build multi-platform archives and publish a GitHub Release
+
+See [TECHNICAL.md](TECHNICAL.md) for details.
 
 ## CLI and SDK
 

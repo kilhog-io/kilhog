@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Build release binaries
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          targets=(
+            "linux amd64"
+            "linux arm64"
+            "darwin amd64"
+            "darwin arm64"
+            "windows amd64"
+          )
+          for target in "${targets[@]}"; do
+            set -- $target
+            goos="$1"
+            goarch="$2"
+            ext=""
+            if [ "$goos" = "windows" ]; then ext=".exe"; fi
+            outdir="dist/${goos}-${goarch}"
+            mkdir -p "$outdir"
+            go build -trimpath -ldflags="-s -w" \
+              -o "${outdir}/kilhog${ext}" ./cmd/kilhog
+            go build -trimpath -ldflags="-s -w" \
+              -o "${outdir}/pogig${ext}" ./cmd/pogig
+            archive="dist/kilhog_${version}_${goos}_${goarch}"
+            if [ "$goos" = "windows" ]; then
+              (cd "$outdir" && zip -q "../$(basename "$archive").zip" *)
+            else
+              tar -C "$outdir" -czf "${archive}.tar.gz" .
+            fi
+          done
+          (cd dist && sha256sum kilhog_*.tar.gz kilhog_*.zip > checksums.txt)
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
