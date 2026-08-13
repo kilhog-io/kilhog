@@ -25,4 +25,5 @@ type SubnetRepository interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 	ListByNetwork(ctx context.Context, networkID uuid.UUID) ([]*model.Subnet, error)
 	ListByParent(ctx context.Context, parent model.Parent) ([]*model.Subnet, error)
+	Count(ctx context.Context) (int64, error)
 }

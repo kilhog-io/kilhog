@@ -12,6 +12,7 @@ import (
 
 	"github.com/kilhog-io/kilhog/internal/handler"
 	kilhoglog "github.com/kilhog-io/kilhog/internal/log"
+	"github.com/kilhog-io/kilhog/internal/metrics"
 	"github.com/kilhog-io/kilhog/internal/repository"
 	"github.com/kilhog-io/kilhog/internal/repository/db"
 	"github.com/kilhog-io/kilhog/internal/service"
@@ -45,15 +46,43 @@ func main() {
 		}
 	}()
 
+	metricsProvider, err := metrics.Setup(ctx)
+	if err != nil {
+		slog.Error("metrics init failed", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := metricsProvider.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("metrics shutdown failed", "error", err)
+		}
+	}()
+
+	if err := seedResourceMetrics(ctx, repos, metricsProvider.Resources); err != nil {
+		slog.Error("metrics seed failed", "error", err)
+		os.Exit(1)
+	}
+
 	apiKey := os.Getenv("KILHOG_API_KEY")
+	resourceMetrics := metricsProvider.Resources
 
 	server := &http.Server{
 		Addr: addr,
 		Handler: handler.NewRouter(handler.Dependencies{
-			Store:          repos.Store,
-			NetworkService: service.NewNetworkService(repos.Networks, repos.Subnets),
-			SubnetService:  service.NewSubnetService(repos.Subnets, repos.Networks),
-			APIKey:         apiKey,
+			Store: repos.Store,
+			NetworkService: service.NewNetworkService(
+				repos.Networks,
+				repos.Subnets,
+				service.WithNetworkMetrics(resourceMetrics),
+			),
+			SubnetService: service.NewSubnetService(
+				repos.Subnets,
+				repos.Networks,
+				service.WithSubnetMetrics(resourceMetrics),
+			),
+			APIKey:  apiKey,
+			Metrics: metricsProvider,
 		}),
 	}
 
@@ -83,6 +112,20 @@ func main() {
 		slog.Error("server shutdown failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+func seedResourceMetrics(ctx context.Context, repos *repository.Repositories, tracker *metrics.ResourceTracker) error {
+	networks, err := repos.Networks.Count(ctx)
+	if err != nil {
+		return fmt.Errorf("count networks: %w", err)
+	}
+	subnets, err := repos.Subnets.Count(ctx)
+	if err != nil {
+		return fmt.Errorf("count subnets: %w", err)
+	}
+	tracker.Seed(networks, subnets)
+	slog.Info("metrics seeded", "networks", networks, "subnets", subnets)
+	return nil
 }
 
 func envOrDefault(key, fallback string) string {

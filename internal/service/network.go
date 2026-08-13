@@ -21,12 +21,27 @@ var (
 type NetworkService struct {
 	networks NetworkRepository
 	subnets  SubnetRepository
+	metrics  ResourceMetrics
 }
 
-func NewNetworkService(networks NetworkRepository, subnets SubnetRepository) *NetworkService {
-	return &NetworkService{
+func NewNetworkService(networks NetworkRepository, subnets SubnetRepository, opts ...NetworkServiceOption) *NetworkService {
+	s := &NetworkService{
 		networks: networks,
 		subnets:  subnets,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// NetworkServiceOption configures optional NetworkService dependencies.
+type NetworkServiceOption func(*NetworkService)
+
+// WithNetworkMetrics attaches functional metrics to the network service.
+func WithNetworkMetrics(m ResourceMetrics) NetworkServiceOption {
+	return func(s *NetworkService) {
+		s.metrics = m
 	}
 }
 
@@ -66,6 +81,10 @@ func (s *NetworkService) Create(ctx context.Context, input CreateNetworkInput) (
 
 	if err := s.networks.Create(ctx, network); err != nil {
 		return nil, fmt.Errorf("create network: %w", err)
+	}
+
+	if s.metrics != nil {
+		s.metrics.NetworkCreated(ctx)
 	}
 
 	return network, nil
@@ -126,6 +145,10 @@ func (s *NetworkService) Update(ctx context.Context, id uuid.UUID, input UpdateN
 		return nil, fmt.Errorf("update network: %w", err)
 	}
 
+	if s.metrics != nil {
+		s.metrics.NetworkUpdated(ctx)
+	}
+
 	return network, nil
 }
 
@@ -153,6 +176,10 @@ func (s *NetworkService) Delete(ctx context.Context, id uuid.UUID) error {
 			return ErrNetworkNotFound
 		}
 		return fmt.Errorf("delete network: %w", err)
+	}
+
+	if s.metrics != nil {
+		s.metrics.NetworkDeleted(ctx)
 	}
 
 	return nil

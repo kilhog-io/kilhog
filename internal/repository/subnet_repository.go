@@ -281,6 +281,14 @@ func (r *SubnetRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	})
 }
 
+func (r *SubnetRepository) Count(ctx context.Context) (int64, error) {
+	var count int64
+	if err := r.store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM subnets`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count subnets: %w", err)
+	}
+	return count, nil
+}
+
 func (r *SubnetRepository) ListByNetwork(ctx context.Context, networkID uuid.UUID) ([]*model.Subnet, error) {
 	query := fmt.Sprintf(`
 		SELECT uuid, name, description, prefix, address, address_type, parent_kind, parent_uuid

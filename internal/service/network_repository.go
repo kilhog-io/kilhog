@@ -15,4 +15,5 @@ type NetworkRepository interface {
 	Update(ctx context.Context, network *model.Network) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	List(ctx context.Context) ([]*model.Network, error)
+	Count(ctx context.Context) (int64, error)
 }
