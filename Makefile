@@ -12,7 +12,9 @@ KILHOG_API_KEY ?= dev-secret
 
 KILHOG_CLIENT_ENV = KILHOG_BASE_URL='$(KILHOG_BASE_URL)' KILHOG_API_KEY='$(KILHOG_API_KEY)'
 
-.PHONY: build build-pogig build-all run-dev dev-create-networks dev-update-network-hors-prod dev-delete-network-prod dev-create-subnets dev-update-subnet-dmz dev-delete-subnet-apps
+DOCKER_IMAGE ?= kilhog:local
+
+.PHONY: build build-pogig build-all docker-build run-dev dev-create-networks dev-update-network-hors-prod dev-delete-network-prod dev-create-subnets dev-update-subnet-dmz dev-delete-subnet-apps
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -23,6 +25,9 @@ build-pogig:
 	go build -o $(CLI_BIN) ./cmd/pogig
 
 build-all: build build-pogig
+
+docker-build:
+	docker build -t $(DOCKER_IMAGE) .
 
 run-dev: build
 	KILHOG_DB_DRIVER=sqlite KILHOG_DB_DSN='$(DEV_DB_DSN)' KILHOG_API_KEY='$(KILHOG_API_KEY)' ./$(BIN)
