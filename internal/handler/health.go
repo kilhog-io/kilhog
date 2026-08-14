@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	kilhoglog "github.com/kilhog-io/kilhog/internal/log"
+	"github.com/kilhog-io/kilhog/internal/metrics"
 	"github.com/kilhog-io/kilhog/internal/repository/db"
 	"github.com/kilhog-io/kilhog/internal/service"
 )
@@ -13,11 +14,15 @@ type Dependencies struct {
 	NetworkService *service.NetworkService
 	SubnetService  *service.SubnetService
 	APIKey         string
+	Metrics        *metrics.Provider
 }
 
 func NewRouter(deps Dependencies) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler(deps.Store))
+	if deps.Metrics != nil {
+		mux.Handle("GET /metrics", deps.Metrics.Handler())
+	}
 
 	protected := http.NewServeMux()
 	if deps.NetworkService != nil {
@@ -33,7 +38,11 @@ func NewRouter(deps Dependencies) http.Handler {
 	}
 	mux.Handle("/", protectedHandler)
 
-	return kilhoglog.HTTPMiddleware(mux)
+	var handler http.Handler = mux
+	if deps.Metrics != nil && deps.Metrics.HTTP != nil {
+		handler = deps.Metrics.HTTP.Middleware(handler)
+	}
+	return kilhoglog.HTTPMiddleware(handler)
 }
 
 func healthHandler(store *db.Store) http.HandlerFunc {

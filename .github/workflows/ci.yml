@@ -36,6 +36,17 @@ jobs:
       - name: Build
         run: make build-all
 
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: make docker-build
+
   # Optional matrix for cross-compile smoke checks on PRs/pushes to main.
   build-matrix:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})

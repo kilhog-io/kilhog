@@ -62,15 +62,18 @@ make run-dev KILHOG_API_KEY=my-secret
 make build        # API server binary in bin/kilhog
 make build-pogig  # CLI binary in bin/pogig
 make build-all    # both binaries
+make docker-build # scratch image (kilhog:local)
 make test         # run tests
 make ci           # vet + test + build (same checks as GitHub Actions CI)
 ```
+
+The Docker image is a multi-stage build ending on `scratch` (static binary only). See [TECHNICAL.md](TECHNICAL.md) for run examples and env defaults.
 
 ## CI/CD
 
 GitHub Actions workflows:
 
-- **CI** (`.github/workflows/ci.yml`) — on push/PR to `main`: vet, test, build, and cross-compile smoke checks
+- **CI** (`.github/workflows/ci.yml`) — on push/PR to `main`: vet, test, build, Docker image, and cross-compile smoke checks
 - **Release** (`.github/workflows/release.yml`) — on `v*` tags: build multi-platform archives and publish a GitHub Release
 
 See [TECHNICAL.md](TECHNICAL.md) for details.

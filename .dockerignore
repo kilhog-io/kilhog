@@ -1,0 +1,12 @@
+.git
+.cursor
+bin/
+*.db
+*.db-wal
+*.db-shm
+/data/
+scripts/
+*.png
+*.md
+Dockerfile
+.dockerignore

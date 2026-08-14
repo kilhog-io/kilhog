@@ -181,6 +181,14 @@ func (r *NetworkRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	})
 }
 
+func (r *NetworkRepository) Count(ctx context.Context) (int64, error) {
+	var count int64
+	if err := r.store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM networks`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count networks: %w", err)
+	}
+	return count, nil
+}
+
 func (r *NetworkRepository) List(ctx context.Context) ([]*model.Network, error) {
 	rows, err := r.store.DB.QueryContext(ctx, `
 		SELECT uuid, name, description

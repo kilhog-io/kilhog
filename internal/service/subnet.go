@@ -33,12 +33,27 @@ var (
 type SubnetService struct {
 	subnets  SubnetRepository
 	networks NetworkRepository
+	metrics  ResourceMetrics
 }
 
-func NewSubnetService(subnets SubnetRepository, networks NetworkRepository) *SubnetService {
-	return &SubnetService{
+func NewSubnetService(subnets SubnetRepository, networks NetworkRepository, opts ...SubnetServiceOption) *SubnetService {
+	s := &SubnetService{
 		subnets:  subnets,
 		networks: networks,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// SubnetServiceOption configures optional SubnetService dependencies.
+type SubnetServiceOption func(*SubnetService)
+
+// WithSubnetMetrics attaches functional metrics to the subnet service.
+func WithSubnetMetrics(m ResourceMetrics) SubnetServiceOption {
+	return func(s *SubnetService) {
+		s.metrics = m
 	}
 }
 
@@ -86,7 +101,7 @@ func (s *SubnetService) Create(ctx context.Context, input CreateSubnetInput) (*m
 	address := strings.TrimSpace(input.Address)
 	description := strings.TrimSpace(input.Description)
 
-	return s.subnets.CreateAtomically(ctx, input.Parent, func(tx SubnetCreateTx) (*model.Subnet, error) {
+	subnet, err := s.subnets.CreateAtomically(ctx, input.Parent, func(tx SubnetCreateTx) (*model.Subnet, error) {
 		if existing, err := tx.GetByName(ctx, parentCtx.networkUUID, name); err == nil && existing != nil {
 			return nil, userError(ErrSubnetNameTaken, `subnet name %q is already used in this network`, name)
 		} else if err != nil && !errors.Is(err, ErrSubnetNotFound) {
@@ -172,6 +187,15 @@ func (s *SubnetService) Create(ctx context.Context, input CreateSubnetInput) (*m
 
 		return subnet, nil
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	if s.metrics != nil {
+		s.metrics.SubnetCreated(ctx)
+	}
+
+	return subnet, nil
 }
 
 func (s *SubnetService) ListByNetwork(ctx context.Context, networkUUID uuid.UUID) ([]*model.Subnet, error) {
@@ -289,6 +313,10 @@ func (s *SubnetService) Update(ctx context.Context, id uuid.UUID, input UpdateSu
 		return nil, fmt.Errorf("update subnet: %w", err)
 	}
 
+	if s.metrics != nil {
+		s.metrics.SubnetUpdated(ctx)
+	}
+
 	return subnet, nil
 }
 
@@ -316,6 +344,10 @@ func (s *SubnetService) Delete(ctx context.Context, id uuid.UUID) error {
 			return ErrSubnetNotFound
 		}
 		return fmt.Errorf("delete subnet: %w", err)
+	}
+
+	if s.metrics != nil {
+		s.metrics.SubnetDeleted(ctx)
 	}
 
 	return nil
