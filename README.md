@@ -13,9 +13,10 @@ Its name comes from an English–French–Breton word chain: *pool* → *poule* 
 - **Network** management (tenancy boundaries)
 - Hierarchical IPv4 **subnet** management (CIDR blocks and host addresses)
 - CIDR validation: parent containment, overlap detection, automatic address allocation
-- **SQLite** or **PostgreSQL** persistence with versioned migrations
-- JSON REST API with optional API key authentication
+- **SQLite**, **PostgreSQL**, or **Cloudflare D1** persistence with versioned migrations
+- JSON REST API with API key, local users (bootstrap admin), and multi-pool OIDC authentication
 - **pogig** CLI and **Go SDK** (`pkg/kilhog`) for programmatic access and Terraform integration
+- Cloudflare Workers WASM deployment (`make build-wasm`)
 - Ready for multi-tenancy and RBAC
 
 ## Documentation
@@ -41,7 +42,7 @@ make dev-create-subnets
 KILHOG_API_KEY=dev-secret ./bin/pogig network list
 ```
 
-`make run-dev` enables API key auth with the default key `dev-secret`. Dev script targets pass the same key automatically. Disable auth with `make run-dev KILHOG_API_KEY=`.
+`make run-dev` enables API key auth with the default key `dev-secret`. Dev script targets pass the same key automatically. If the server key is empty, functional routes return `403`.
 
 Check that the API responds:
 
@@ -61,7 +62,8 @@ make run-dev KILHOG_API_KEY=my-secret
 ```bash
 make build        # API server binary in bin/kilhog
 make build-pogig  # CLI binary in bin/pogig
-make build-all    # both binaries
+make build-all    # both native binaries
+make build-wasm   # Cloudflare Workers WASM (workers/build/)
 make docker-build # scratch image (kilhog:local)
 make test         # run tests
 make ci           # vet + test + build (same checks as GitHub Actions CI)
@@ -78,6 +80,18 @@ GitHub Actions workflows:
 
 See [TECHNICAL.md](TECHNICAL.md) for details.
 
+## Cloudflare Workers
+
+```bash
+# One-time: create D1 DB and set database_id in workers/wrangler.jsonc
+cd workers && npx wrangler d1 create kilhog
+
+make worker-dev      # local preview (Wrangler)
+make worker-deploy   # deploy to Cloudflare
+```
+
+See [TECHNICAL.md](TECHNICAL.md) for Worker env vars, D1 binding, and size limits.
+
 ## CLI and SDK
 
 | Component | Path | Role |
@@ -93,6 +107,6 @@ The Terraform provider is maintained in a **separate Git repository** and should
 
 - Go 1.26+
 - REST API, layered architecture (`handler` → `service` → `repository`)
-- SQLite and PostgreSQL drivers
+- SQLite, PostgreSQL, and Cloudflare D1 (Workers WASM) drivers
 
 See [TECHNICAL.md](TECHNICAL.md) for configuration details, routes, and the relational schema.

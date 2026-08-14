@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -82,6 +83,15 @@ func main() {
 
 	apiKey := os.Getenv("KILHOG_API_KEY")
 	resourceMetrics := metricsProvider.Resources
+	authCfg := service.AuthConfig{
+		APIKey:         apiKey,
+		BootstrapToken: os.Getenv("KILHOG_BOOTSTRAP_TOKEN"),
+		PublicURL:      os.Getenv("KILHOG_PUBLIC_URL"),
+		SessionTTL:     sessionTTLFromEnv(),
+	}
+	authService := service.NewAuthService(repos.Users, repos.IdentityPools, repos.Sessions, repos.OIDCStates, authCfg)
+	userService := service.NewUserService(repos.Users)
+	poolService := service.NewIdentityPoolService(repos.IdentityPools)
 
 	server := &http.Server{
 		Addr: addr,
@@ -97,16 +107,20 @@ func main() {
 				repos.Networks,
 				service.WithSubnetMetrics(resourceMetrics),
 			),
-			APIKey:  apiKey,
-			Metrics: metricsProvider,
+			AuthService:         authService,
+			UserService:         userService,
+			IdentityPoolService: poolService,
+			APIKey:              apiKey,
+			Metrics:             metricsProvider,
 		}),
 	}
 
-	if apiKey != "" {
-		slog.Info("kilhog listening", "addr", addr, "db", cfg.Driver, "api_key", "enabled")
-	} else {
-		slog.Info("kilhog listening", "addr", addr, "db", cfg.Driver, "api_key", "disabled")
-	}
+	slog.Info("kilhog listening",
+		"addr", addr,
+		"db", cfg.Driver,
+		"api_key", boolLabel(apiKey != ""),
+		"public_url", authCfg.PublicURL,
+	)
 
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -150,4 +164,26 @@ func envOrDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func sessionTTLFromEnv() time.Duration {
+	raw := os.Getenv("KILHOG_SESSION_TTL")
+	if raw == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(raw); err == nil {
+		return time.Duration(secs) * time.Second
+	}
+	if d, err := time.ParseDuration(raw); err == nil {
+		return d
+	}
+	slog.Warn("invalid KILHOG_SESSION_TTL, using default", "value", raw)
+	return 0
+}
+
+func boolLabel(enabled bool) string {
+	if enabled {
+		return "enabled"
+	}
+	return "missing"
 }

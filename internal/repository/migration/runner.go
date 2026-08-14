@@ -32,7 +32,7 @@ func (r *Runner) Upgrade(ctx context.Context) error {
 		return err
 	}
 
-	scripts, err := loadScripts(string(r.store.Dialect), "up")
+	scripts, err := loadScripts(r.store.Dialect.MigrationDialect(), "up")
 	if err != nil {
 		return err
 	}
@@ -70,7 +70,7 @@ func (r *Runner) Downgrade(ctx context.Context, targetVersion int) error {
 		return fmt.Errorf("target version %d must be lower than current version %d", targetVersion, current)
 	}
 
-	scripts, err := loadScripts(string(r.store.Dialect), "down")
+	scripts, err := loadScripts(r.store.Dialect.MigrationDialect(), "down")
 	if err != nil {
 		return err
 	}

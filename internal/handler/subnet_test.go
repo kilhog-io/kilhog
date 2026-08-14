@@ -17,7 +17,7 @@ func TestSubnetRoutes_Lifecycle(t *testing.T) {
 	repos := openHandlerRepositories(t)
 	networkSvc := service.NewNetworkService(repos.Networks, repos.Subnets)
 	subnetSvc := service.NewSubnetService(repos.Subnets, repos.Networks)
-	router := NewRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
+	router := newAuthedTestRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
 
 	network, err := networkSvc.Create(t.Context(), service.CreateNetworkInput{Name: "lab"})
 	if err != nil {
@@ -96,7 +96,7 @@ func TestSubnetRoutes_CreateAutoAddress(t *testing.T) {
 	repos := openHandlerRepositories(t)
 	networkSvc := service.NewNetworkService(repos.Networks, repos.Subnets)
 	subnetSvc := service.NewSubnetService(repos.Subnets, repos.Networks)
-	router := NewRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
+	router := newAuthedTestRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
 
 	network, err := networkSvc.Create(t.Context(), service.CreateNetworkInput{Name: "lab"})
 	if err != nil {
@@ -145,7 +145,7 @@ func TestSubnetRoutes_AddressRequiredForNetworkParent(t *testing.T) {
 	repos := openHandlerRepositories(t)
 	networkSvc := service.NewNetworkService(repos.Networks, repos.Subnets)
 	subnetSvc := service.NewSubnetService(repos.Subnets, repos.Networks)
-	router := NewRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
+	router := newAuthedTestRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
 
 	network, err := networkSvc.Create(t.Context(), service.CreateNetworkInput{Name: "lab"})
 	if err != nil {
@@ -171,7 +171,7 @@ func TestSubnetRoutes_OverlapConflict(t *testing.T) {
 	repos := openHandlerRepositories(t)
 	networkSvc := service.NewNetworkService(repos.Networks, repos.Subnets)
 	subnetSvc := service.NewSubnetService(repos.Subnets, repos.Networks)
-	router := NewRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
+	router := newAuthedTestRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
 
 	network, err := networkSvc.Create(t.Context(), service.CreateNetworkInput{Name: "lab"})
 	if err != nil {
@@ -214,7 +214,7 @@ func TestSubnetRoutes_NameTakenMessage(t *testing.T) {
 	repos := openHandlerRepositories(t)
 	networkSvc := service.NewNetworkService(repos.Networks, repos.Subnets)
 	subnetSvc := service.NewSubnetService(repos.Subnets, repos.Networks)
-	router := NewRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
+	router := newAuthedTestRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
 
 	network, err := networkSvc.Create(t.Context(), service.CreateNetworkInput{Name: "lab"})
 	if err != nil {
@@ -263,7 +263,7 @@ func TestSubnetRoutes_NotFound(t *testing.T) {
 	repos := openHandlerRepositories(t)
 	networkSvc := service.NewNetworkService(repos.Networks, repos.Subnets)
 	subnetSvc := service.NewSubnetService(repos.Subnets, repos.Networks)
-	router := NewRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
+	router := newAuthedTestRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
 
 	network, err := networkSvc.Create(t.Context(), service.CreateNetworkInput{Name: "lab"})
 	if err != nil {
@@ -285,7 +285,7 @@ func TestSubnetRoutes_NotInNetwork(t *testing.T) {
 	repos := openHandlerRepositories(t)
 	networkSvc := service.NewNetworkService(repos.Networks, repos.Subnets)
 	subnetSvc := service.NewSubnetService(repos.Subnets, repos.Networks)
-	router := NewRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
+	router := newAuthedTestRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
 
 	netA, err := networkSvc.Create(t.Context(), service.CreateNetworkInput{Name: "a"})
 	if err != nil {
@@ -320,7 +320,7 @@ func TestSubnetRoutes_DeleteWithChildren(t *testing.T) {
 	repos := openHandlerRepositories(t)
 	networkSvc := service.NewNetworkService(repos.Networks, repos.Subnets)
 	subnetSvc := service.NewSubnetService(repos.Subnets, repos.Networks)
-	router := NewRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
+	router := newAuthedTestRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
 
 	network, err := networkSvc.Create(t.Context(), service.CreateNetworkInput{Name: "lab"})
 	if err != nil {
@@ -361,7 +361,7 @@ func TestSubnetRoutes_ListChildren(t *testing.T) {
 	repos := openHandlerRepositories(t)
 	networkSvc := service.NewNetworkService(repos.Networks, repos.Subnets)
 	subnetSvc := service.NewSubnetService(repos.Subnets, repos.Networks)
-	router := NewRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
+	router := newAuthedTestRouter(Dependencies{NetworkService: networkSvc, SubnetService: subnetSvc})
 
 	network, err := networkSvc.Create(t.Context(), service.CreateNetworkInput{Name: "lab"})
 	if err != nil {

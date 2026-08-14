@@ -12,6 +12,7 @@
 kilhog/
 ├── cmd/
 │   ├── kilhog/          # API server entry point (main.go)
+│   ├── kilhog-worker/   # Cloudflare Workers WASM entry point (GOOS=js GOARCH=wasm)
 │   └── pogig/           # CLI entry point (Breton for "chick")
 │       └── internal/cmd/ # Cobra commands (network, subnet, health)
 ├── pkg/
@@ -23,12 +24,14 @@ kilhog/
 │   ├── service/         # Business logic and repository interfaces
 │   ├── repository/      # Data access, migrations, SQL drivers
 │   │   ├── migration/   # Versioned migration runner (upgrade / downgrade)
-│   │   ├── postgres/    # PostgreSQL implementation
-│   │   └── sqlite/      # SQLite implementation
+│   │   ├── postgres/    # PostgreSQL implementation (native builds only)
+│   │   ├── sqlite/      # SQLite implementation (native builds only)
+│   │   └── d1/          # Cloudflare D1 implementation (WASM / Workers builds)
 │   └── model/           # Models and data structures
 ├── .github/
 │   └── workflows/       # GitHub Actions CI/CD pipelines
 ├── migrations/          # Embedded versioned SQL scripts (sqlite/ and postgres/)
+├── workers/             # Cloudflare Workers project (Wrangler, WASM build assets)
 ├── scripts/
 │   └── dev/             # HTTP scripts for local development
 ├── Dockerfile           # Multi-stage build → scratch image for the API server
@@ -48,6 +51,9 @@ Technical modeling of `FUNCTIONAL.md`. See that file for business rules.
 | `Parent`       | `parent.go`        | Reference to a `network` or `subnet` parent |
 | `Network`      | `network.go`       | Tenancy container |
 | `Subnet`       | `subnet.go`        | IP address space (block or host) |
+| `LocalUser`    | `user.go`          | Local username/password account |
+| `IdentityPool` | `identity_pool.go` | OIDC identity pool configuration |
+| `Session`      | `session.go`       | Server-side session + OIDC login state |
 
 ### `Network`
 
@@ -92,6 +98,9 @@ Interfaces defined on the service side (consumed by business logic):
 - `NetworkRepository` — CRUD, listing, and `Count` of networks
 - `SubnetRepository` — CRUD, listing by network or by parent, and `Count`
 - `ResourceMetrics` — optional in-memory functional metrics (create/update/delete hooks); no SQL on scrape
+- `UserRepository` — local users
+- `IdentityPoolRepository` — OIDC identity pools
+- `SessionRepository` / `OIDCLoginStateRepository` — sessions and PKCE state
 
 ## IPv4 utilities (`internal/iputil`)
 
@@ -103,21 +112,24 @@ Interfaces defined on the service side (consumed by business logic):
 
 ## Persistence layer (`internal/repository`)
 
-**Configurable, abstract** data backend. Two drivers are supported: **SQLite** and **PostgreSQL**. The service consumes repository interfaces; driver choice is transparent to business logic.
+**Configurable, abstract** data backend. Three drivers are supported: **SQLite**, **PostgreSQL**, and **Cloudflare D1** (Workers / WASM). The service consumes repository interfaces; driver choice is transparent to business logic.
 
 ### Abstraction
 
 ```
-service (NetworkRepository, SubnetRepository)
+service (NetworkRepository, SubnetRepository, UserRepository, IdentityPoolRepository, SessionRepository, …)
     └── repository/
-            ├── sqlite/    → SQLite implementations
-            ├── postgres/  → PostgreSQL implementations
-            └── migration/ → migration runner (shared by both drivers)
+            ├── sqlite/    → SQLite implementations (native)
+            ├── postgres/  → PostgreSQL implementations (native)
+            ├── d1/        → Cloudflare D1 (WASM / Workers)
+            └── migration/ → migration runner (shared; D1 reuses SQLite scripts)
 ```
 
 Each driver implements the interfaces defined in `internal/service`. SQL queries use adapted dialects where needed (UUID types, `TIMESTAMPTZ`, etc.).
 
 Concrete repository implementations live in `internal/repository/` (`network_repository.go`, `subnet_repository.go`) and are instantiated via `repository.Open`.
+
+Native builds (`GOOS` ≠ `js`) compile SQLite and PostgreSQL drivers only. WASM builds (`GOOS=js GOARCH=wasm`) compile the D1 driver only, keeping the Worker binary smaller.
 
 ### Concurrent access
 
@@ -136,6 +148,10 @@ Mutations (`Create`, `Update`, `Delete`) go through `WithWriteTx`: SQLite write 
 Subnet creation with auto-allocated addresses uses `SubnetRepository.CreateAtomically`: sibling listing, overlap validation, and insert run in the same write transaction. The parent row is locked (`SELECT … FOR UPDATE` on PostgreSQL; SQLite relies on the application write mutex) so parallel creates under the same parent cannot pick the same CIDR.
 
 On PostgreSQL, the SQLite application lock is disabled: concurrency is handled by MVCC and SQL transactions.
+
+### Cloudflare D1 notes
+
+D1 is SQLite-compatible and uses the embedded **SQLite** migration scripts. The Go D1 driver (`github.com/syumai/workers/cloudflare/d1`) does **not** support SQL `BEGIN`/`COMMIT`. For `DialectD1`, `Store.WithTx` therefore executes statements sequentially under the application write mutex (best-effort atomicity, not a real SQL transaction). Prefer low write concurrency on the Worker deployment.
 
 ### Connection and database creation
 
@@ -178,7 +194,9 @@ Example (per-dialect structure):
 ```
 internal/repository/migration/migrations/sqlite/
 ├── 001_initial_schema.up.sql
-└── 001_initial_schema.down.sql
+├── 001_initial_schema.down.sql
+├── 002_auth.up.sql
+└── 002_auth.down.sql
 ```
 
 #### Tracking table: `schema_migrations`
@@ -265,16 +283,66 @@ networks (1) ──< subnets (N)
 
 The `001_initial_schema.up.sql` script creates `schema_migrations`, `networks`, `subnets`, and `tags` tables with the constraints above. The `001_initial_schema.down.sql` script drops these tables in reverse dependency order.
 
+#### Auth script (`002_auth`)
+
+Adds local users, OIDC identity pools, sessions, and OIDC login-state tables (see below).
+
+#### `local_users` table
+
+| Column          | Type          | Constraints | Maps to |
+|-----------------|---------------|-------------|---------|
+| `uuid`          | UUID          | PK          | `LocalUser.UUID` |
+| `username`      | TEXT          | NOT NULL, unique (case-insensitive) | `LocalUser.Username` |
+| `password_hash` | TEXT          | NOT NULL    | bcrypt hash (never returned by API) |
+| `display_name`  | TEXT          | NULL        | `LocalUser.DisplayName` |
+| `email`         | TEXT          | NULL        | `LocalUser.Email` |
+| `role`          | TEXT          | NOT NULL, CHECK IN (`admin`, `user`) | `LocalUser.Role` |
+| `enabled`       | BOOL/INT      | NOT NULL    | `LocalUser.Enabled` |
+| `created_at`    | TIMESTAMPTZ   | NOT NULL    | `LocalUser.CreatedAt` |
+| `updated_at`    | TIMESTAMPTZ   | NOT NULL    | `LocalUser.UpdatedAt` |
+
+#### `oidc_identity_pools` table
+
+| Column          | Type          | Constraints | Maps to |
+|-----------------|---------------|-------------|---------|
+| `uuid`          | UUID          | PK          | `IdentityPool.UUID` |
+| `name`          | TEXT          | NOT NULL, UNIQUE | `IdentityPool.Name` |
+| `slug`          | TEXT          | NOT NULL, UNIQUE | `IdentityPool.Slug` |
+| `issuer`        | TEXT          | NOT NULL, UNIQUE | `IdentityPool.Issuer` |
+| `client_id`     | TEXT          | NOT NULL    | `IdentityPool.ClientID` |
+| `client_secret` | TEXT          | NULL        | stored secret (never returned; `has_client_secret` exposed) |
+| `scopes`        | TEXT          | NOT NULL (JSON array) | `IdentityPool.Scopes` |
+| `enabled`       | BOOL/INT      | NOT NULL    | `IdentityPool.Enabled` |
+| `created_at` / `updated_at` | TIMESTAMPTZ | NOT NULL | timestamps |
+
+#### `sessions` table
+
+| Column | Description |
+|--------|-------------|
+| `uuid` | Session id |
+| `token_hash` | SHA-256 hex of opaque session token (UNIQUE) |
+| `principal_kind` | `local_user` or `oidc` |
+| `local_user_uuid` | FK → `local_users` (CASCADE) when kind is local |
+| `identity_pool_uuid` | FK → pools (SET NULL) when kind is OIDC |
+| `oidc_subject` / `oidc_email` / `oidc_name` | Federated claims |
+| `expires_at` | Session expiry |
+
+#### `oidc_login_states` table
+
+Short-lived PKCE/`state`/`nonce` rows for Authorization Code + PKCE (TTL ~10 minutes). Consumed atomically on callback (`Take`).
+
 ### Dialect differences
 
-| Aspect | SQLite | PostgreSQL |
-|--------|--------|------------|
-| UUID type | `TEXT` (canonical format) or `BLOB` | Native `UUID` |
-| Timestamps | `TEXT` ISO-8601 or `DATETIME` | `TIMESTAMPTZ` |
-| Database creation | File on disk | `CREATE DATABASE` via admin connection |
-| Go driver | `modernc.org/sqlite` or `mattn/go-sqlite3` | `jackc/pgx/v5` |
+| Aspect | SQLite | PostgreSQL | Cloudflare D1 |
+|--------|--------|------------|---------------|
+| UUID type | `TEXT` (canonical format) or `BLOB` | Native `UUID` | `TEXT` (SQLite scripts) |
+| Timestamps | `TEXT` ISO-8601 or `DATETIME` | `TIMESTAMPTZ` | Same as SQLite |
+| Database creation | File on disk | `CREATE DATABASE` via admin connection | Provisioned via Wrangler (`wrangler d1 create`) |
+| Go driver | `modernc.org/sqlite` | `jackc/pgx/v5` | `github.com/syumai/workers/cloudflare/d1` |
+| SQL transactions | Yes | Yes | No (driver limitation; see D1 notes) |
+| Build target | Native | Native | `GOOS=js GOARCH=wasm` |
 
-Migrations may contain dialect-specific sections if needed; otherwise SQL stays as portable as possible.
+Migrations may contain dialect-specific sections if needed; otherwise SQL stays as portable as possible. D1 loads the `sqlite/` migration folder via `Dialect.MigrationDialect()`.
 
 ## Dependencies
 
@@ -283,13 +351,17 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 | `github.com/google/uuid` | Resource `UUID` identifiers |
 | `github.com/spf13/cobra` | pogig CLI command tree |
 | `database/sql` | Standard Go SQL abstraction |
-| `modernc.org/sqlite` | SQLite driver (pure Go) |
-| `jackc/pgx/v5` | PostgreSQL driver |
+| `modernc.org/sqlite` | SQLite driver (pure Go, native builds) |
+| `jackc/pgx/v5` | PostgreSQL driver (native builds) |
 | `go.opentelemetry.io/otel` | OpenTelemetry metrics API |
 | `go.opentelemetry.io/otel/sdk` | MeterProvider / resource |
 | `go.opentelemetry.io/otel/exporters/prometheus` | Prometheus scrape exporter (OTel-compatible) |
 | `go.opentelemetry.io/contrib/instrumentation/runtime` | Go runtime system metrics |
 | `github.com/prometheus/client_golang` | Prometheus registry and `/metrics` HTTP handler |
+| `github.com/syumai/workers` | Cloudflare Workers HTTP + D1 (WASM builds) |
+| `github.com/coreos/go-oidc/v3` | OIDC ID token verification |
+| `golang.org/x/oauth2` | OIDC Authorization Code + PKCE |
+| `golang.org/x/crypto` | bcrypt password hashing |
 
 ## API routes
 
@@ -297,6 +369,17 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 |--------|---------------------|---------------|-------------|
 | GET     | `/healthz`          | no            | Server health (includes database ping) |
 | GET     | `/metrics`          | no            | OpenTelemetry metrics in Prometheus exposition format |
+| GET     | `/auth/status`      | no            | Auth configuration / bootstrap availability |
+| POST    | `/auth/bootstrap`   | no*           | Create primo-admin when no local user exists |
+| POST    | `/auth/login`       | no            | Local username/password login |
+| POST    | `/auth/logout`      | no            | End session (cookie / bearer token) |
+| GET     | `/auth/me`          | yes*          | Current principal |
+| GET     | `/auth/oidc/pools`  | no            | List enabled OIDC pools (name + slug) |
+| GET     | `/auth/oidc/{slug}/login` | no      | Start OIDC Authorization Code + PKCE |
+| GET     | `/auth/oidc/callback` | no          | OIDC callback; issues session |
+| GET/POST/PUT/DELETE | `/users…` | admin | Local user administration |
+| POST    | `/users/me/password`| local user    | Change own password |
+| GET/POST/PUT/DELETE | `/auth/identity-pools…` | admin | OIDC pool administration |
 | GET     | `/networks`         | yes*          | List all networks |
 | POST    | `/networks`         | yes*          | Create a network |
 | GET     | `/networks/{uuid}`  | yes*          | Get a network by UUID |
@@ -310,34 +393,53 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 | GET     | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | yes* | List child subnets of a subnet |
 | POST    | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | yes* | Create a child subnet of a subnet |
 
-> \* Auth is required when `KILHOG_API_KEY` is set. When the variable is empty or unset, all routes remain open (local development default).
+> \* Protected IPAM and admin routes require authentication. Auth is configured when at least one of: non-empty `KILHOG_API_KEY`, ≥1 local user, or ≥1 enabled OIDC pool. Otherwise protected routes return `403`. Invalid credentials return `401`. `GET /healthz`, `GET /metrics`, and public auth discovery/login routes stay reachable without a session.
 
 > **Tenancy**: all subnet operations go through `/networks/{uuid}/…`. The network `uuid` in the URL is the isolation boundary; the server verifies that each subnet belongs to that network (directly or via the parent hierarchy).
 
 ### Authentication
 
-Minimal API key protection is enabled when the `KILHOG_API_KEY` environment variable is set to a non-empty value.
+Three methods are accepted (OR semantics). See `FUNCTIONAL.md` for business rules.
 
-| Aspect | Behavior |
-|--------|----------|
-| Scope | All routes except `GET /healthz` and `GET /metrics` (health and Prometheus scrapes stay public) |
-| Disabled | When `KILHOG_API_KEY` is empty or unset |
-| Comparison | Constant-time (`crypto/subtle`) to reduce timing leaks |
+| Method | How presented | Notes |
+|--------|---------------|-------|
+| API key | `Authorization: Bearer <key>` or `X-API-Key` | Shared secret from `KILHOG_API_KEY`; IPAM access only (not user/pool admin) |
+| Local session | `Authorization: Bearer <session_token>` or cookie `kilhog_session` | Issued by `/auth/bootstrap` or `/auth/login` |
+| OIDC | Session after code flow, or Bearer JWT validated against an enabled pool | Admin of users/pools requires a local `admin` account |
 
-Clients must send the key in one of these headers:
+`GET /healthz` and `GET /metrics` stay public (health probes and Prometheus scrapes).
 
-| Header | Format |
-|--------|--------|
-| `Authorization` | `Bearer <api_key>` |
-| `X-API-Key` | `<api_key>` |
+#### Bootstrap (primo-admin)
 
-Missing or invalid credentials:
+`POST /auth/bootstrap` is allowed only while `local_users` is empty. Creates an `admin` and returns a session. Optional `KILHOG_BOOTSTRAP_TOKEN` must match body `bootstrap_token` or header `X-Bootstrap-Token` when set.
+
+#### Sessions
+
+Opaque tokens (32 random bytes, base64url) stored as SHA-256 hashes. Default TTL 24h (`KILHOG_SESSION_TTL`). Logout deletes the hash and clears the cookie. Disabling/deleting an OIDC pool stops new logins; existing sessions remain until expiry.
+
+#### OIDC
+
+- Requires `KILHOG_PUBLIC_URL` (redirect URI = `{KILHOG_PUBLIC_URL}/auth/oidc/callback`).
+- Flow: Authorization Code + PKCE via `GET /auth/oidc/{slug}/login` → IdP → `/auth/oidc/callback`.
+- Dependencies: `github.com/coreos/go-oidc/v3`, `golang.org/x/oauth2`, `golang.org/x/crypto/bcrypt`.
+
+Missing or invalid credentials when auth is configured:
 
 ```json
 {
   "status": "error",
-  "message": "missing or invalid API key",
+  "message": "missing or invalid credentials",
   "code": 401
+}
+```
+
+Authentication not configured:
+
+```json
+{
+  "status": "error",
+  "message": "authentication is not configured",
+  "code": 403
 }
 ```
 
@@ -756,14 +858,25 @@ Errors:
 
 | Variable           | Default             | Description |
 |--------------------|---------------------|-------------|
-| `KILHOG_HOST`      | `0.0.0.0`           | HTTP listen address |
-| `KILHOG_PORT`      | `8080`              | HTTP listen port |
+| `KILHOG_HOST`      | `0.0.0.0`           | HTTP listen address (native server only) |
+| `KILHOG_PORT`      | `8080`              | HTTP listen port (native server only) |
 | `KILHOG_LOG_LEVEL` | `info`              | Log level: `debug`, `info`, `warn`, `error`, or `off` |
-| `KILHOG_API_KEY`   | *(empty)*           | API key for protected routes; auth disabled when unset |
-| `KILHOG_DB_DRIVER` | `sqlite`            | Database driver: `sqlite` or `postgres` |
-| `KILHOG_DB_DSN`    | `file:kilhog.db`    | Connection DSN (see examples below) |
-| `KILHOG_AUTO_MIGRATE` | `true`           | Apply upgrade migrations at startup |
+| `KILHOG_API_KEY`   | *(empty)*           | Shared API key for IPAM routes; one of the auth methods |
+| `KILHOG_BOOTSTRAP_TOKEN` | *(empty)*     | Optional secret required for `POST /auth/bootstrap` |
+| `KILHOG_PUBLIC_URL` | *(empty)*          | Public base URL for OIDC redirect URIs (no trailing slash) |
+| `KILHOG_SESSION_TTL` | `24h`             | Session lifetime (Go duration or integer seconds) |
+| `KILHOG_DB_DRIVER` | `sqlite`            | Database driver: `sqlite`, `postgres`, or `d1` |
+| `KILHOG_DB_DSN`    | see below           | Connection DSN or D1 binding name |
+| `KILHOG_AUTO_MIGRATE` | `true`           | Apply upgrade migrations at startup (or first Worker request) |
 | `KILHOG_METRICS_REFRESH_INTERVAL` | `30s` | How often IPAM gauges are reconciled from `COUNT(*)`. `0` or `off` disables the loop (single-instance). Scrapes never query SQL. |
+
+Default `KILHOG_DB_DSN`:
+
+| Driver | Default DSN |
+|--------|-------------|
+| `sqlite` | `file:kilhog.db?_pragma=foreign_keys(ON)` |
+| `postgres` | *(none — must be set)* |
+| `d1` | `DB` (Wrangler D1 binding name) |
 
 ### Logging
 
@@ -771,7 +884,7 @@ Logging uses the standard library `log/slog` with a text handler on stderr. Conf
 
 | Level   | HTTP requests | Other events |
 |---------|---------------|--------------|
-| `debug` | Method, path, status, duration, headers (API key redacted), request body, response body | Migration details, startup/shutdown |
+| `debug` | Method, path, status, duration, headers (`Authorization` / `X-API-Key` / `Cookie` redacted), request body, response body | Migration details, startup/shutdown |
 | `info`  | Method, path, status, duration (one line per request) | Startup, migrations applied, shutdown |
 | `warn`  | — | Warnings (e.g. database close failure) |
 | `error` | — | Fatal configuration or runtime errors |
@@ -785,6 +898,7 @@ Every HTTP request passes through `internal/log.HTTPMiddleware` (wired in `handl
 |----------|-------------|
 | SQLite   | `file:./data/kilhog.db?_pragma=foreign_keys(ON)` |
 | PostgreSQL | `postgres://user:pass@localhost:5432/kilhog?sslmode=disable` |
+| D1       | `DB` (must match the `binding` in `workers/wrangler.jsonc`) |
 
 ## JSON response format
 
@@ -818,14 +932,77 @@ Example — CIDR overlap:
 ```bash
 make build        # API server binary in bin/kilhog
 make build-pogig  # CLI binary in bin/pogig
-make build-all    # both binaries
+make build-all    # both native binaries
+make build-wasm   # Cloudflare Workers WASM bundle in workers/build/
 make docker-build # container image (kilhog:local)
 make vet          # go vet ./...
 make test         # go test ./...
 make ci           # vet + test + build-all (local equivalent of CI)
 ```
 
-Compiles the API server from `./cmd/kilhog` and the CLI from `./cmd/pogig`.
+Compiles the API server from `./cmd/kilhog`, the CLI from `./cmd/pogig`, and the Worker entry from `./cmd/kilhog-worker` (`GOOS=js GOARCH=wasm`).
+
+## Cloudflare Workers (WASM)
+
+kilhog can run on [Cloudflare Workers](https://workers.cloudflare.com/) by compiling the API to WebAssembly. Persistence uses **Cloudflare D1** (SQLite-compatible).
+
+### Layout
+
+```
+workers/
+├── package.json       # npm scripts: build, dev, deploy
+├── wrangler.jsonc     # Worker name, D1 binding, env vars
+├── schema.sql         # Optional manual D1 bootstrap (prefer auto-migrate)
+└── build/             # Generated: app.wasm, worker.mjs, runtime assets (gitignored)
+cmd/kilhog-worker/     # Go entry point using github.com/syumai/workers
+```
+
+### Prerequisites
+
+- Go 1.26+
+- Node.js + npm
+- Cloudflare account and Wrangler auth (`npx wrangler login`)
+
+### One-time D1 setup
+
+```bash
+cd workers
+npm install
+npx wrangler d1 create kilhog
+```
+
+Copy the printed `database_id` into `workers/wrangler.jsonc` (`d1_databases[0].database_id`). Keep the binding name `DB` (or change both Wrangler and `KILHOG_DB_DSN`).
+
+### Build, local preview, deploy
+
+```bash
+make worker-install   # npm install in workers/
+make build-wasm       # generate workers/build/app.wasm + loader
+make worker-dev       # wrangler dev (http://127.0.0.1:8787 by default)
+make worker-deploy    # wrangler deploy
+```
+
+Or from `workers/`:
+
+```bash
+npm run build
+npm start             # local Wrangler preview
+npm run deploy
+```
+
+### Worker configuration
+
+| Source | Keys |
+|--------|------|
+| `wrangler.jsonc` `vars` | `KILHOG_DB_DRIVER=d1`, `KILHOG_DB_DSN=DB`, `KILHOG_AUTO_MIGRATE`, `KILHOG_LOG_LEVEL` |
+| Wrangler secret (recommended) | `KILHOG_API_KEY` via `npx wrangler secret put KILHOG_API_KEY` |
+| D1 binding | `DB` → database `kilhog` |
+
+On the first request, the Worker opens D1, runs pending SQLite migrations when `KILHOG_AUTO_MIGRATE=true`, then serves the same REST routes as the native server.
+
+### Size limits
+
+Standard Go WASM binaries can be large. Cloudflare Workers limits are approximately **3 MB** (free) / **10 MB** (paid) for the compressed Worker. If the bundle exceeds the limit, reduce dependencies or evaluate TinyGo (not wired by default).
 
 ## CI/CD (GitHub Actions)
 
@@ -1002,7 +1179,7 @@ Builds and runs the application with SQLite:
 - **File**: `kilhog.db` at the project root (created automatically on first startup)
 - **Migrations**: applied automatically (`KILHOG_AUTO_MIGRATE=true` by default)
 - **Listen**: `http://0.0.0.0:8080`
-- **API key**: `dev-secret` by default (`KILHOG_API_KEY` in the Makefile); disable with `make run-dev KILHOG_API_KEY=`
+- **API key**: `dev-secret` by default (`KILHOG_API_KEY` in the Makefile). Leaving it empty rejects functional routes with `403`.
 
 The `kilhog.db` file (and SQLite auxiliary files `kilhog.db-wal`, `kilhog.db-shm`) is ignored by Git (see `.gitignore`).
 
@@ -1013,7 +1190,7 @@ The `kilhog.db` file (and SQLite auxiliary files `kilhog.db-wal`, `kilhog.db-shm
 | `KILHOG_API_KEY` | `dev-secret` | `run-dev`, `dev-*` script targets |
 | `KILHOG_BASE_URL` | `http://localhost:8080` | `dev-*` script targets |
 
-Override on the command line, for example `make dev-create-networks KILHOG_API_KEY=other-secret`. When calling **pogig** directly, export the same key: `KILHOG_API_KEY=dev-secret ./bin/pogig network list`.
+Override on the command line, for example `make dev-create-networks KILHOG_API_KEY=other-secret`. When calling **pogig** directly, export the same key: `KILHOG_API_KEY=dev-secret ./bin/pogig network list`. If `KILHOG_API_KEY` is empty on the server, functional routes return `403`.
 
 ### Direct run
 
@@ -1032,9 +1209,9 @@ The `scripts/dev/` folder contains standalone Bash scripts that call the REST AP
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `KILHOG_BASE_URL` | `http://localhost:8080` | API base URL |
-| `KILHOG_API_KEY` | `dev-secret` (via Makefile) | API key sent as `Authorization: Bearer …`; empty disables auth on `run-dev` |
+| `KILHOG_API_KEY` | `dev-secret` (via Makefile) | API key sent as `Authorization: Bearer …`; server must have the same non-empty key |
 
-Make targets `run-dev` and `dev-*` inject these values automatically. Override with `make … KILHOG_API_KEY=other-secret` or disable auth with `make run-dev KILHOG_API_KEY=`.
+Make targets `run-dev` and `dev-*` inject these values automatically. Override with `make … KILHOG_API_KEY=other-secret`. An empty server key rejects functional routes with `403`.
 
 | Script | JSON file(s) | Make target | Action |
 |--------|--------------|-------------|--------|

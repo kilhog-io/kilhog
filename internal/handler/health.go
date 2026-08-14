@@ -10,11 +10,14 @@ import (
 )
 
 type Dependencies struct {
-	Store          *db.Store
-	NetworkService *service.NetworkService
-	SubnetService  *service.SubnetService
-	APIKey         string
-	Metrics        *metrics.Provider
+	Store               *db.Store
+	NetworkService      *service.NetworkService
+	SubnetService       *service.SubnetService
+	AuthService         *service.AuthService
+	UserService         *service.UserService
+	IdentityPoolService *service.IdentityPoolService
+	APIKey              string
+	Metrics             *metrics.Provider
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -23,6 +26,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.Metrics != nil {
 		mux.Handle("GET /metrics", deps.Metrics.Handler())
 	}
+	registerAuthRoutes(mux, deps.AuthService, deps.IdentityPoolService)
 
 	protected := http.NewServeMux()
 	if deps.NetworkService != nil {
@@ -31,12 +35,13 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.SubnetService != nil {
 		registerSubnetRoutes(protected, deps.SubnetService)
 	}
-
-	protectedHandler := http.Handler(protected)
-	if deps.APIKey != "" {
-		protectedHandler = apiKeyMiddleware(deps.APIKey, protected)
+	if deps.UserService != nil {
+		protected.HandleFunc("POST /users/me/password", changeOwnPasswordHandler(deps.UserService))
 	}
-	mux.Handle("/", protectedHandler)
+	registerUserAdminRoutes(protected, deps.UserService)
+	registerIdentityPoolRoutes(protected, deps.IdentityPoolService)
+
+	mux.Handle("/", authMiddleware(deps.AuthService, deps.APIKey, protected))
 
 	var handler http.Handler = mux
 	if deps.Metrics != nil && deps.Metrics.HTTP != nil {

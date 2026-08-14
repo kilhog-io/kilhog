@@ -1,0 +1,17 @@
+{
+  "name": "kilhog-worker",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "go run github.com/syumai/workers/cmd/workers-assets-gen@v0.33.0 -mode=go && GOOS=js GOARCH=wasm go build -o ./build/app.wasm github.com/kilhog-io/kilhog/cmd/kilhog-worker",
+    "dev": "wrangler dev",
+    "start": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "d1:create": "wrangler d1 create kilhog",
+    "d1:migrate:local": "wrangler d1 execute kilhog --local --file=./schema.sql",
+    "d1:migrate:remote": "wrangler d1 execute kilhog --remote --file=./schema.sql"
+  },
+  "devDependencies": {
+    "wrangler": "^4.14.0"
+  }
+}

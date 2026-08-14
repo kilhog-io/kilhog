@@ -28,9 +28,18 @@ func ConfigFromEnv() (Config, error) {
 
 	return Config{
 		Driver:      driver,
-		DSN:         envOrDefault("KILHOG_DB_DSN", "file:kilhog.db?_pragma=foreign_keys(ON)"),
+		DSN:         envOrDefault("KILHOG_DB_DSN", defaultDSN(driver)),
 		AutoMigrate: autoMigrate,
 	}, nil
+}
+
+func defaultDSN(driver Dialect) string {
+	switch driver {
+	case DialectD1:
+		return "DB"
+	default:
+		return "file:kilhog.db?_pragma=foreign_keys(ON)"
+	}
 }
 
 func envOrDefault(key, fallback string) string {

@@ -38,6 +38,12 @@ func (s *Store) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) {
 }
 
 func (s *Store) WithTx(ctx context.Context, opts *sql.TxOptions, fn func(Querier) error) error {
+	// Cloudflare D1 does not support SQL transactions in the Go driver.
+	// Fall back to executing statements sequentially under the write lock.
+	if !s.Dialect.SupportsSQLTransactions() {
+		return fn(s.DB)
+	}
+
 	tx, err := s.BeginTx(ctx, opts)
 	if err != nil {
 		return err
@@ -59,7 +65,7 @@ func (s *Store) WithTx(ctx context.Context, opts *sql.TxOptions, fn func(Querier
 }
 
 func (s *Store) WithWriteLock(ctx context.Context, fn func(Querier) error) error {
-	if s.Dialect == DialectSQLite {
+	if s.Dialect.UsesSQLiteSyntax() {
 		s.writeMu.Lock()
 		defer s.writeMu.Unlock()
 	}
@@ -74,7 +80,7 @@ func (s *Store) WithWriteTx(ctx context.Context, fn func(Querier) error) error {
 
 func (s *Store) AcquireMigrationLock(ctx context.Context) (release func() error, err error) {
 	switch s.Dialect {
-	case DialectSQLite:
+	case DialectSQLite, DialectD1:
 		s.writeMu.Lock()
 		return func() error {
 			s.writeMu.Unlock()

@@ -81,7 +81,7 @@ func redactHeaders(headers http.Header) map[string]string {
 	out := make(map[string]string, len(headers))
 	for key, values := range headers {
 		lower := strings.ToLower(key)
-		if lower == "authorization" || lower == "x-api-key" {
+		if lower == "authorization" || lower == "x-api-key" || lower == "cookie" {
 			out[key] = "[REDACTED]"
 			continue
 		}

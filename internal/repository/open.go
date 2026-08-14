@@ -7,15 +7,17 @@ import (
 
 	"github.com/kilhog-io/kilhog/internal/repository/db"
 	"github.com/kilhog-io/kilhog/internal/repository/migration"
-	"github.com/kilhog-io/kilhog/internal/repository/postgres"
-	"github.com/kilhog-io/kilhog/internal/repository/sqlite"
 	"github.com/kilhog-io/kilhog/internal/service"
 )
 
 type Repositories struct {
-	Store    *db.Store
-	Networks service.NetworkRepository
-	Subnets  service.SubnetRepository
+	Store         *db.Store
+	Networks      service.NetworkRepository
+	Subnets       service.SubnetRepository
+	Users         service.UserRepository
+	IdentityPools service.IdentityPoolRepository
+	Sessions      service.SessionRepository
+	OIDCStates    service.OIDCLoginStateRepository
 }
 
 func Open(ctx context.Context, cfg db.Config) (*Repositories, error) {
@@ -34,21 +36,14 @@ func Open(ctx context.Context, cfg db.Config) (*Repositories, error) {
 	}
 
 	return &Repositories{
-		Store:    store,
-		Networks: NewNetworkRepository(store),
-		Subnets:  NewSubnetRepository(store),
+		Store:         store,
+		Networks:      NewNetworkRepository(store),
+		Subnets:       NewSubnetRepository(store),
+		Users:         NewUserRepository(store),
+		IdentityPools: NewIdentityPoolRepository(store),
+		Sessions:      NewSessionRepository(store),
+		OIDCStates:    NewOIDCLoginStateRepository(store),
 	}, nil
-}
-
-func openStore(ctx context.Context, cfg db.Config) (*db.Store, error) {
-	switch cfg.Driver {
-	case db.DialectSQLite:
-		return sqlite.Open(ctx, cfg.DSN)
-	case db.DialectPostgres:
-		return postgres.Open(ctx, cfg.DSN)
-	default:
-		return nil, fmt.Errorf("unsupported database driver %q", cfg.Driver)
-	}
 }
 
 func (r *Repositories) Close() error {
