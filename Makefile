@@ -14,7 +14,7 @@ KILHOG_CLIENT_ENV = KILHOG_BASE_URL='$(KILHOG_BASE_URL)' KILHOG_API_KEY='$(KILHO
 
 DOCKER_IMAGE ?= kilhog:local
 
-.PHONY: build build-pogig build-all docker-build run-dev dev-create-networks dev-update-network-hors-prod dev-delete-network-prod dev-create-subnets dev-update-subnet-dmz dev-delete-subnet-apps
+.PHONY: build build-pogig build-all docker-build test vet ci run-dev dev-create-networks dev-update-network-hors-prod dev-delete-network-prod dev-create-subnets dev-update-subnet-dmz dev-delete-subnet-apps
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -28,6 +28,14 @@ build-all: build build-pogig
 
 docker-build:
 	docker build -t $(DOCKER_IMAGE) .
+
+vet:
+	go vet ./...
+
+test:
+	go test ./...
+
+ci: vet test build-all
 
 run-dev: build
 	KILHOG_DB_DRIVER=sqlite KILHOG_DB_DSN='$(DEV_DB_DSN)' KILHOG_API_KEY='$(KILHOG_API_KEY)' ./$(BIN)
