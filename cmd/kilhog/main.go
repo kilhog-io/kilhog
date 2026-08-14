@@ -59,10 +59,26 @@ func main() {
 		}
 	}()
 
-	if err := seedResourceMetrics(ctx, repos, metricsProvider.Resources); err != nil {
+	refreshInterval, err := metrics.RefreshIntervalFromEnv()
+	if err != nil {
+		slog.Error("metrics refresh config failed", "error", err)
+		os.Exit(1)
+	}
+
+	refreshCtx, stopRefresh := context.WithCancel(context.Background())
+	defer stopRefresh()
+
+	countSource := resourceCountSource(repos)
+	if err := metricsProvider.Resources.Refresh(ctx, countSource); err != nil {
 		slog.Error("metrics seed failed", "error", err)
 		os.Exit(1)
 	}
+	slog.Info("metrics seeded",
+		"networks", metricsProvider.Resources.NetworkCount(),
+		"subnets", metricsProvider.Resources.SubnetCount(),
+		"refresh_interval", refreshInterval.String(),
+	)
+	metricsProvider.Resources.StartRefresh(refreshCtx, refreshInterval, countSource)
 
 	apiKey := os.Getenv("KILHOG_API_KEY")
 	resourceMetrics := metricsProvider.Resources
@@ -104,6 +120,7 @@ func main() {
 	<-stop
 
 	slog.Info("shutting down")
+	stopRefresh()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -114,18 +131,18 @@ func main() {
 	}
 }
 
-func seedResourceMetrics(ctx context.Context, repos *repository.Repositories, tracker *metrics.ResourceTracker) error {
-	networks, err := repos.Networks.Count(ctx)
-	if err != nil {
-		return fmt.Errorf("count networks: %w", err)
+func resourceCountSource(repos *repository.Repositories) metrics.ResourceCountSource {
+	return func(ctx context.Context) (metrics.ResourceCounts, error) {
+		networks, err := repos.Networks.Count(ctx)
+		if err != nil {
+			return metrics.ResourceCounts{}, fmt.Errorf("count networks: %w", err)
+		}
+		subnets, err := repos.Subnets.Count(ctx)
+		if err != nil {
+			return metrics.ResourceCounts{}, fmt.Errorf("count subnets: %w", err)
+		}
+		return metrics.ResourceCounts{Networks: networks, Subnets: subnets}, nil
 	}
-	subnets, err := repos.Subnets.Count(ctx)
-	if err != nil {
-		return fmt.Errorf("count subnets: %w", err)
-	}
-	tracker.Seed(networks, subnets)
-	slog.Info("metrics seeded", "networks", networks, "subnets", subnets)
-	return nil
 }
 
 func envOrDefault(key, fallback string) string {

@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/kilhog-io/kilhog/internal/metrics"
 )
@@ -97,5 +99,109 @@ func TestHTTPMetricsMiddleware(t *testing.T) {
 	}
 	if !strings.Contains(body, "http_server_request_duration") {
 		t.Fatalf("expected http request duration metric, body:\n%s", body)
+	}
+}
+
+func TestResourceTrackerRefreshReconcilesReplicaDrift(t *testing.T) {
+	ctx := context.Background()
+	provider, err := metrics.Setup(ctx)
+	if err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = provider.Shutdown(context.Background())
+	})
+
+	provider.Resources.Seed(10, 20)
+	provider.Resources.NetworkCreated(ctx) // local replica handled a create → 11
+	if got := provider.Resources.NetworkCount(); got != 11 {
+		t.Fatalf("NetworkCount() after local create = %d, want 11", got)
+	}
+
+	// Another replica created four more networks; this process only learns via Refresh.
+	err = provider.Resources.Refresh(ctx, func(context.Context) (metrics.ResourceCounts, error) {
+		return metrics.ResourceCounts{Networks: 15, Subnets: 20}, nil
+	})
+	if err != nil {
+		t.Fatalf("Refresh() error = %v", err)
+	}
+	if got := provider.Resources.NetworkCount(); got != 15 {
+		t.Fatalf("NetworkCount() after refresh = %d, want 15", got)
+	}
+	if got := provider.Resources.SubnetCount(); got != 20 {
+		t.Fatalf("SubnetCount() after refresh = %d, want 20", got)
+	}
+}
+
+func TestStartRefreshStopsOnCancel(t *testing.T) {
+	ctx := context.Background()
+	provider, err := metrics.Setup(ctx)
+	if err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = provider.Shutdown(context.Background())
+	})
+
+	var calls atomic.Int64
+	src := func(context.Context) (metrics.ResourceCounts, error) {
+		n := calls.Add(1)
+		return metrics.ResourceCounts{Networks: n, Subnets: 0}, nil
+	}
+
+	refreshCtx, cancel := context.WithCancel(context.Background())
+	provider.Resources.StartRefresh(refreshCtx, 20*time.Millisecond, src)
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if calls.Load() >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() < 2 {
+		t.Fatalf("refresh calls = %d, want at least 2", calls.Load())
+	}
+
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+	stopped := calls.Load()
+	time.Sleep(60 * time.Millisecond)
+	if calls.Load() != stopped {
+		t.Fatalf("refresh continued after cancel: before=%d after=%d", stopped, calls.Load())
+	}
+}
+
+func TestRefreshIntervalFromEnv(t *testing.T) {
+	t.Setenv("KILHOG_METRICS_REFRESH_INTERVAL", "")
+	got, err := metrics.RefreshIntervalFromEnv()
+	if err != nil {
+		t.Fatalf("empty env error = %v", err)
+	}
+	if got != metrics.DefaultRefreshInterval {
+		t.Fatalf("empty env = %s, want %s", got, metrics.DefaultRefreshInterval)
+	}
+
+	t.Setenv("KILHOG_METRICS_REFRESH_INTERVAL", "off")
+	got, err = metrics.RefreshIntervalFromEnv()
+	if err != nil {
+		t.Fatalf("off error = %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("off = %s, want 0", got)
+	}
+
+	t.Setenv("KILHOG_METRICS_REFRESH_INTERVAL", "15s")
+	got, err = metrics.RefreshIntervalFromEnv()
+	if err != nil {
+		t.Fatalf("15s error = %v", err)
+	}
+	if got != 15*time.Second {
+		t.Fatalf("15s = %s, want 15s", got)
+	}
+
+	t.Setenv("KILHOG_METRICS_REFRESH_INTERVAL", "nope")
+	if _, err = metrics.RefreshIntervalFromEnv(); err == nil {
+		t.Fatal("expected error for invalid duration")
 	}
 }

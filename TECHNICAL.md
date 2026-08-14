@@ -376,6 +376,8 @@ OpenTelemetry MeterProvider
     ├── Prometheus exporter → GET /metrics (promhttp)
     ├── runtime instrumentation → Go system metrics (memory, GC, goroutines, …)
     ├── ResourceTracker → kilhog.networks / kilhog.subnets (+ operation counters)
+    │     ├── seed + background Refresh from COUNT(*) (not on scrape)
+    │     └── ±1 on local create/delete
     └── HTTPMetrics middleware → request count + duration
 ```
 
@@ -383,22 +385,43 @@ At startup (`cmd/kilhog`):
 
 1. `metrics.Setup` builds a custom Prometheus registry + OTel MeterProvider.
 2. Go runtime metrics start via `go.opentelemetry.io/contrib/instrumentation/runtime` (plus the runtime producer for scheduling histograms).
-3. Network/subnet counts are **seeded once** with `NetworkRepository.Count` / `SubnetRepository.Count`.
-4. Successful create/delete/update paths in `NetworkService` / `SubnetService` update the in-memory tracker (optional `WithNetworkMetrics` / `WithSubnetMetrics`).
+3. Network/subnet counts are **seeded** with `NetworkRepository.Count` / `SubnetRepository.Count`.
+4. A **background refresh** (default every 30s, `KILHOG_METRICS_REFRESH_INTERVAL`) overwrites those gauges from the same `COUNT(*)` queries so replicas converge after mutations handled elsewhere.
+5. Successful create/delete/update paths in `NetworkService` / `SubnetService` update the in-memory tracker (optional `WithNetworkMetrics` / `WithSubnetMetrics`).
 
 #### Metric catalog
 
 | OTel name | Kind | Source | Notes |
 |-----------|------|--------|-------|
-| `go.*` (e.g. `go.goroutine.count`, `go.memory.used`) | gauges / counters | OTel runtime instrumentation | Go system metrics; scraped without application SQL |
-| `kilhog.networks` | observable gauge | in-memory | Seeded at startup; ±1 on network create/delete |
-| `kilhog.subnets` | observable gauge | in-memory | Seeded at startup; ±1 on subnet create/delete |
-| `kilhog.network.operations` | counter | service hooks | Attribute `operation` = `create` \| `update` \| `delete` |
-| `kilhog.subnet.operations` | counter | service hooks | Attribute `operation` = `create` \| `update` \| `delete` |
-| `http.server.request.count` | counter | HTTP middleware | Method, route, status code / class |
-| `http.server.request.duration` | histogram (seconds) | HTTP middleware | Same attributes; `/metrics` itself is not recorded |
+| `go.*` (e.g. `go.goroutine.count`, `go.memory.used`) | gauges / counters | OTel runtime instrumentation | **Per process**; scrape without application SQL |
+| `kilhog.networks` | observable gauge | in-memory (DB-reconciled) | Cluster-wide total; seed + local ±1 + periodic refresh |
+| `kilhog.subnets` | observable gauge | in-memory (DB-reconciled) | Cluster-wide total; seed + local ±1 + periodic refresh |
+| `kilhog.network.operations` | counter | service hooks | **Per process**; `operation` = `create` \| `update` \| `delete` |
+| `kilhog.subnet.operations` | counter | service hooks | **Per process**; `operation` = `create` \| `update` \| `delete` |
+| `http.server.request.count` | counter | HTTP middleware | **Per process**; method, route, status code / class |
+| `http.server.request.duration` | histogram (seconds) | HTTP middleware | **Per process**; `/metrics` itself is not recorded |
 
 Prometheus name translation applies (underscores / `_total` suffixes), for example `kilhog_networks`, `kilhog_network_operations_total`, `go_goroutine_count`.
+
+#### Multi-instance (replicated API)
+
+Several kilhog processes may share one PostgreSQL database. Metrics behave as follows:
+
+| Metric | Scope | If you scrape every replica |
+|--------|-------|-----------------------------|
+| Go runtime, HTTP, `*.operations` | This process only | **`sum()`** (each request / GC / mutation is counted once, on the instance that handled it) |
+| `kilhog.networks`, `kilhog.subnets` | Shared DB total, copied on each process | **`max()`** (or `avg()`), **never `sum()`** — summing would multiply the cluster total by the replica count |
+
+Between refreshes, a replica only applies ±1 for mutations **it** handled. Other replicas catch up on the next `COUNT(*)` refresh (default 30s). Scrapes still never hit SQL.
+
+Example PromQL:
+
+```
+max(kilhog_networks)
+max(kilhog_subnets)
+sum(rate(kilhog_network_operations_total[5m]))
+sum(rate(http_server_request_count_total[5m]))
+```
 
 #### Response
 
@@ -736,6 +759,7 @@ Errors:
 | `KILHOG_DB_DRIVER` | `sqlite`            | Database driver: `sqlite` or `postgres` |
 | `KILHOG_DB_DSN`    | `file:kilhog.db`    | Connection DSN (see examples below) |
 | `KILHOG_AUTO_MIGRATE` | `true`           | Apply upgrade migrations at startup |
+| `KILHOG_METRICS_REFRESH_INTERVAL` | `30s` | How often IPAM gauges are reconciled from `COUNT(*)`. `0` or `off` disables the loop (single-instance). Scrapes never query SQL. |
 
 ### Logging
 

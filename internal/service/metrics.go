@@ -4,7 +4,8 @@ import "context"
 
 // ResourceMetrics tracks IPAM resource counts and mutation operations.
 // Implementations must not query the database on metric scrape; counts are
-// kept in memory and updated only when create/delete succeeds.
+// kept in memory, updated on local create/delete, and may be reconciled
+// from persistence on a background interval (multi-instance).
 type ResourceMetrics interface {
 	NetworkCreated(ctx context.Context)
 	NetworkUpdated(ctx context.Context)

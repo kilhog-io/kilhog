@@ -114,8 +114,9 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 }
 
 // ResourceTracker keeps network/subnet counts in memory and exposes them as
-// OTel observable gauges. Values are seeded once at startup and updated on
-// successful mutations — scrapes never query SQL.
+// OTel observable gauges. Values are seeded at startup, updated on local
+// mutations, and periodically reconciled from the database so replicas
+// converge. Scrapes never query SQL.
 type ResourceTracker struct {
 	networks atomic.Int64
 	subnets  atomic.Int64
