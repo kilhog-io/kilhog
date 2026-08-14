@@ -19,6 +19,7 @@ kilhog/
 ├── internal/
 │   ├── handler/         # HTTP handlers and request validation
 │   ├── log/             # Structured logging (slog) and HTTP request middleware
+│   ├── metrics/         # OpenTelemetry metrics (Prometheus /metrics exporter)
 │   ├── service/         # Business logic and repository interfaces
 │   ├── repository/      # Data access, migrations, SQL drivers
 │   │   ├── migration/   # Versioned migration runner (upgrade / downgrade)
@@ -86,8 +87,9 @@ Constants: `IPv4HostPrefix` (32), `IPv6HostPrefix` (128).
 
 Interfaces defined on the service side (consumed by business logic):
 
-- `NetworkRepository` — CRUD and listing of networks
-- `SubnetRepository` — CRUD, listing by network or by parent
+- `NetworkRepository` — CRUD, listing, and `Count` of networks
+- `SubnetRepository` — CRUD, listing by network or by parent, and `Count`
+- `ResourceMetrics` — optional in-memory functional metrics (create/update/delete hooks); no SQL on scrape
 
 ## IPv4 utilities (`internal/iputil`)
 
@@ -281,12 +283,18 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 | `database/sql` | Standard Go SQL abstraction |
 | `modernc.org/sqlite` | SQLite driver (pure Go) |
 | `jackc/pgx/v5` | PostgreSQL driver |
+| `go.opentelemetry.io/otel` | OpenTelemetry metrics API |
+| `go.opentelemetry.io/otel/sdk` | MeterProvider / resource |
+| `go.opentelemetry.io/otel/exporters/prometheus` | Prometheus scrape exporter (OTel-compatible) |
+| `go.opentelemetry.io/contrib/instrumentation/runtime` | Go runtime system metrics |
+| `github.com/prometheus/client_golang` | Prometheus registry and `/metrics` HTTP handler |
 
 ## API routes
 
 | Method | Route               | Auth required | Description |
 |--------|---------------------|---------------|-------------|
 | GET     | `/healthz`          | no            | Server health (includes database ping) |
+| GET     | `/metrics`          | no            | OpenTelemetry metrics in Prometheus exposition format |
 | GET     | `/networks`         | yes*          | List all networks |
 | POST    | `/networks`         | yes*          | Create a network |
 | GET     | `/networks/{uuid}`  | yes*          | Get a network by UUID |
@@ -310,7 +318,7 @@ Minimal API key protection is enabled when the `KILHOG_API_KEY` environment vari
 
 | Aspect | Behavior |
 |--------|----------|
-| Scope | All routes except `GET /healthz` (health probes stay public) |
+| Scope | All routes except `GET /healthz` and `GET /metrics` (health and Prometheus scrapes stay public) |
 | Disabled | When `KILHOG_API_KEY` is empty or unset |
 | Comparison | Constant-time (`crypto/subtle`) to reduce timing leaks |
 
@@ -358,6 +366,68 @@ The `parent` field remains exposed in **responses** (immutable after creation) s
   }
 }
 ```
+
+### `GET /metrics`
+
+Exposes OpenTelemetry metrics in **Prometheus exposition format** (OpenMetrics enabled). Scrapes are intentionally cheap: functional gauges are served from in-memory counters — **no SQL on each scrape**.
+
+#### Architecture (`internal/metrics`)
+
+```
+OpenTelemetry MeterProvider
+    ├── Prometheus exporter → GET /metrics (promhttp)
+    ├── runtime instrumentation → Go system metrics (memory, GC, goroutines, …)
+    ├── ResourceTracker → kilhog.networks / kilhog.subnets (+ operation counters)
+    │     ├── seed + background Refresh from COUNT(*) (not on scrape)
+    │     └── ±1 on local create/delete
+    └── HTTPMetrics middleware → request count + duration
+```
+
+At startup (`cmd/kilhog`):
+
+1. `metrics.Setup` builds a custom Prometheus registry + OTel MeterProvider.
+2. Go runtime metrics start via `go.opentelemetry.io/contrib/instrumentation/runtime` (plus the runtime producer for scheduling histograms).
+3. Network/subnet counts are **seeded** with `NetworkRepository.Count` / `SubnetRepository.Count`.
+4. A **background refresh** (default every 30s, `KILHOG_METRICS_REFRESH_INTERVAL`) overwrites those gauges from the same `COUNT(*)` queries so replicas converge after mutations handled elsewhere.
+5. Successful create/delete/update paths in `NetworkService` / `SubnetService` update the in-memory tracker (optional `WithNetworkMetrics` / `WithSubnetMetrics`).
+
+#### Metric catalog
+
+| OTel name | Kind | Source | Notes |
+|-----------|------|--------|-------|
+| `go.*` (e.g. `go.goroutine.count`, `go.memory.used`) | gauges / counters | OTel runtime instrumentation | **Per process**; scrape without application SQL |
+| `kilhog.networks` | observable gauge | in-memory (DB-reconciled) | Cluster-wide total; seed + local ±1 + periodic refresh |
+| `kilhog.subnets` | observable gauge | in-memory (DB-reconciled) | Cluster-wide total; seed + local ±1 + periodic refresh |
+| `kilhog.network.operations` | counter | service hooks | **Per process**; `operation` = `create` \| `update` \| `delete` |
+| `kilhog.subnet.operations` | counter | service hooks | **Per process**; `operation` = `create` \| `update` \| `delete` |
+| `http.server.request.count` | counter | HTTP middleware | **Per process**; method, route, status code / class |
+| `http.server.request.duration` | histogram (seconds) | HTTP middleware | **Per process**; `/metrics` itself is not recorded |
+
+Prometheus name translation applies (underscores / `_total` suffixes), for example `kilhog_networks`, `kilhog_network_operations_total`, `go_goroutine_count`.
+
+#### Multi-instance (replicated API)
+
+Several kilhog processes may share one PostgreSQL database. Metrics behave as follows:
+
+| Metric | Scope | If you scrape every replica |
+|--------|-------|-----------------------------|
+| Go runtime, HTTP, `*.operations` | This process only | **`sum()`** (each request / GC / mutation is counted once, on the instance that handled it) |
+| `kilhog.networks`, `kilhog.subnets` | Shared DB total, copied on each process | **`max()`** (or `avg()`), **never `sum()`** — summing would multiply the cluster total by the replica count |
+
+Between refreshes, a replica only applies ±1 for mutations **it** handled. Other replicas catch up on the next `COUNT(*)` refresh (default 30s). Scrapes still never hit SQL.
+
+Example PromQL:
+
+```
+max(kilhog_networks)
+max(kilhog_subnets)
+sum(rate(kilhog_network_operations_total[5m]))
+sum(rate(http_server_request_count_total[5m]))
+```
+
+#### Response
+
+`200 OK` with `text/plain` (Prometheus / OpenMetrics). Not wrapped in the JSON `{status,data}` envelope.
 
 ### Networks
 
@@ -467,6 +537,7 @@ Errors:
 - `name` uniqueness (application check before insert/update)
 - Tag validation (unique keys)
 - **Delete protection**: calls `SubnetRepository.ListByParent` with `parent.kind = network`; if subnets exist, returns `ErrNetworkHasChildren` (HTTP 409)
+- Optional `WithNetworkMetrics`: updates in-memory functional metrics on successful create/update/delete
 
 ### Subnets
 
@@ -677,6 +748,7 @@ Errors:
 - Automatic address generation within the parent subnet CIDR (only when `address` is absent)
 - **Limited updates**: only `description` is modifiable
 - **Delete protection**: refused if child subnets exist (`ErrSubnetHasChildren`, HTTP 409)
+- Optional `WithSubnetMetrics`: updates in-memory functional metrics on successful create/update/delete
 
 ## Configuration
 
@@ -689,6 +761,7 @@ Errors:
 | `KILHOG_DB_DRIVER` | `sqlite`            | Database driver: `sqlite` or `postgres` |
 | `KILHOG_DB_DSN`    | `file:kilhog.db`    | Connection DSN (see examples below) |
 | `KILHOG_AUTO_MIGRATE` | `true`           | Apply upgrade migrations at startup |
+| `KILHOG_METRICS_REFRESH_INTERVAL` | `30s` | How often IPAM gauges are reconciled from `COUNT(*)`. `0` or `off` disables the loop (single-instance). Scrapes never query SQL. |
 
 ### Logging
 

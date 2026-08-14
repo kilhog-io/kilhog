@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/kilhog-io/kilhog/internal/metrics"
 	"github.com/kilhog-io/kilhog/internal/service"
 )
 
@@ -13,9 +14,18 @@ func TestAPIKeyMiddleware(t *testing.T) {
 	svc := service.NewNetworkService(repos.Networks, repos.Subnets)
 	const testKey = "secret-test-key"
 
+	metricsProvider, err := metrics.Setup(t.Context())
+	if err != nil {
+		t.Fatalf("metrics.Setup() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = metricsProvider.Shutdown(t.Context())
+	})
+
 	router := NewRouter(Dependencies{
 		NetworkService: svc,
 		APIKey:         testKey,
+		Metrics:        metricsProvider,
 	})
 
 	tests := []struct {
@@ -27,6 +37,11 @@ func TestAPIKeyMiddleware(t *testing.T) {
 		{
 			name:           "healthz without key",
 			path:           "/healthz",
+			wantStatusCode: http.StatusOK,
+		},
+		{
+			name:           "metrics without key",
+			path:           "/metrics",
 			wantStatusCode: http.StatusOK,
 		},
 		{

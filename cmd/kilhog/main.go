@@ -12,6 +12,7 @@ import (
 
 	"github.com/kilhog-io/kilhog/internal/handler"
 	kilhoglog "github.com/kilhog-io/kilhog/internal/log"
+	"github.com/kilhog-io/kilhog/internal/metrics"
 	"github.com/kilhog-io/kilhog/internal/repository"
 	"github.com/kilhog-io/kilhog/internal/repository/db"
 	"github.com/kilhog-io/kilhog/internal/service"
@@ -45,15 +46,59 @@ func main() {
 		}
 	}()
 
+	metricsProvider, err := metrics.Setup(ctx)
+	if err != nil {
+		slog.Error("metrics init failed", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := metricsProvider.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("metrics shutdown failed", "error", err)
+		}
+	}()
+
+	refreshInterval, err := metrics.RefreshIntervalFromEnv()
+	if err != nil {
+		slog.Error("metrics refresh config failed", "error", err)
+		os.Exit(1)
+	}
+
+	refreshCtx, stopRefresh := context.WithCancel(context.Background())
+	defer stopRefresh()
+
+	countSource := resourceCountSource(repos)
+	if err := metricsProvider.Resources.Refresh(ctx, countSource); err != nil {
+		slog.Error("metrics seed failed", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("metrics seeded",
+		"networks", metricsProvider.Resources.NetworkCount(),
+		"subnets", metricsProvider.Resources.SubnetCount(),
+		"refresh_interval", refreshInterval.String(),
+	)
+	metricsProvider.Resources.StartRefresh(refreshCtx, refreshInterval, countSource)
+
 	apiKey := os.Getenv("KILHOG_API_KEY")
+	resourceMetrics := metricsProvider.Resources
 
 	server := &http.Server{
 		Addr: addr,
 		Handler: handler.NewRouter(handler.Dependencies{
-			Store:          repos.Store,
-			NetworkService: service.NewNetworkService(repos.Networks, repos.Subnets),
-			SubnetService:  service.NewSubnetService(repos.Subnets, repos.Networks),
-			APIKey:         apiKey,
+			Store: repos.Store,
+			NetworkService: service.NewNetworkService(
+				repos.Networks,
+				repos.Subnets,
+				service.WithNetworkMetrics(resourceMetrics),
+			),
+			SubnetService: service.NewSubnetService(
+				repos.Subnets,
+				repos.Networks,
+				service.WithSubnetMetrics(resourceMetrics),
+			),
+			APIKey:  apiKey,
+			Metrics: metricsProvider,
 		}),
 	}
 
@@ -75,6 +120,7 @@ func main() {
 	<-stop
 
 	slog.Info("shutting down")
+	stopRefresh()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -82,6 +128,20 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("server shutdown failed", "error", err)
 		os.Exit(1)
+	}
+}
+
+func resourceCountSource(repos *repository.Repositories) metrics.ResourceCountSource {
+	return func(ctx context.Context) (metrics.ResourceCounts, error) {
+		networks, err := repos.Networks.Count(ctx)
+		if err != nil {
+			return metrics.ResourceCounts{}, fmt.Errorf("count networks: %w", err)
+		}
+		subnets, err := repos.Subnets.Count(ctx)
+		if err != nil {
+			return metrics.ResourceCounts{}, fmt.Errorf("count subnets: %w", err)
+		}
+		return metrics.ResourceCounts{Networks: networks, Subnets: subnets}, nil
 	}
 }
 
