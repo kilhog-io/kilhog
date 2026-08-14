@@ -62,8 +62,11 @@ make run-dev KILHOG_API_KEY=my-secret
 make build        # API server binary in bin/kilhog
 make build-pogig  # CLI binary in bin/pogig
 make build-all    # both binaries
+make docker-build # scratch image (kilhog:local)
 go test ./...     # run tests
 ```
+
+The Docker image is a multi-stage build ending on `scratch` (static binary only). See [TECHNICAL.md](TECHNICAL.md) for run examples and env defaults.
 
 ## CLI and SDK
 

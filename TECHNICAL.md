@@ -28,6 +28,8 @@ kilhog/
 ├── migrations/          # Embedded versioned SQL scripts (sqlite/ and postgres/)
 ├── scripts/
 │   └── dev/             # HTTP scripts for local development
+├── Dockerfile           # Multi-stage build → scratch image for the API server
+├── .dockerignore        # Build context exclusions for Docker
 ├── FUNCTIONAL.md        # Business rules (defined by the user)
 └── TECHNICAL.md         # This file
 ```
@@ -742,9 +744,40 @@ Example — CIDR overlap:
 make build        # API server binary in bin/kilhog
 make build-pogig  # CLI binary in bin/pogig
 make build-all    # both binaries
+make docker-build # container image (kilhog:local)
 ```
 
 Compiles the API server from `./cmd/kilhog` and the CLI from `./cmd/pogig`.
+
+## Docker image
+
+The root `Dockerfile` produces a **minimal scratch image** for the API server via a **multi-stage build**:
+
+| Stage | Base | Role |
+|-------|------|------|
+| `builder` | `golang:1.26-alpine` | Download modules, compile a static binary (`CGO_ENABLED=0`), install CA certificates |
+| final | `scratch` | Copy only `/kilhog`, CA certs, and an empty `/data` directory |
+
+Design notes:
+
+- **Static binary**: `modernc.org/sqlite` is pure Go, so the binary needs no libc and runs on `scratch`.
+- **TLS**: CA certificates are copied so PostgreSQL (and other) TLS connections work from the container.
+- **Non-root**: the process runs as UID/GID `65532`; SQLite defaults to `file:/data/kilhog.db?_pragma=foreign_keys(ON)`.
+- **Binary only**: the image contains the API server (`cmd/kilhog`), not the pogig CLI.
+
+Build and run:
+
+```bash
+make docker-build
+# or: docker build -t kilhog:local .
+
+docker run --rm -p 8080:8080 \
+  -e KILHOG_API_KEY=dev-secret \
+  -v kilhog-data:/data \
+  kilhog:local
+```
+
+Override database settings with the usual env vars (`KILHOG_DB_DRIVER`, `KILHOG_DB_DSN`, …). Mount `/data` (or point `KILHOG_DB_DSN` at another writable path) when using SQLite so the database survives container restarts.
 
 ## Go SDK (`pkg/kilhog`)
 
