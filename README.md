@@ -75,10 +75,10 @@ The Docker image is a multi-stage build ending on `scratch` (static binary only)
 
 GitHub Actions workflows:
 
-- **CI** (`.github/workflows/ci.yml`) — on push/PR to `main`: vet, test, build, Docker image, and cross-compile smoke checks
-- **Release** (`.github/workflows/release.yml`) — on `v*` tags: build multi-platform archives and publish a GitHub Release
+- **CI** (`.github/workflows/ci.yml`) — on push/PR to `main`: vet, test, build, Docker image (build only), and cross-compile smoke checks
+- **Release** (`.github/workflows/release.yml`) — on `v*` tags: build multi-platform archives, publish a GitHub Release, and push a multi-arch Docker image to Docker Hub
 
-See [TECHNICAL.md](TECHNICAL.md) for details.
+Docker Hub publish requires repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (Settings → Secrets and variables → Actions). Optionally set the variable `DOCKERHUB_IMAGE` (default `{username}/kilhog`). See [TECHNICAL.md](TECHNICAL.md) for the full setup.
 
 ## Cloudflare Workers
 

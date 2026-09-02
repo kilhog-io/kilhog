@@ -1010,8 +1010,8 @@ Workflows live under `.github/workflows/`.
 
 | Workflow | File | Trigger | Purpose |
 |----------|------|---------|---------|
-| **CI** | `ci.yml` | Push and pull requests to `main` | `go vet`, `go test ./...`, `make build-all`, Docker image build, then cross-compile smoke builds for linux/darwin/windows (amd64/arm64 where applicable) |
-| **Release** | `release.yml` | Push of tags matching `v*` | Re-run vet/tests, build release archives (`kilhog` + `pogig`) per OS/arch, publish a GitHub Release with `.tar.gz` / `.zip` assets and `checksums.txt` |
+| **CI** | `ci.yml` | Push and pull requests to `main` | `go vet`, `go test ./...`, `make build-all`, Docker image build (not published), then cross-compile smoke builds for linux/darwin/windows (amd64/arm64 where applicable) |
+| **Release** | `release.yml` | Push of tags matching `v*` | Re-run vet/tests, then in parallel: (1) build release archives (`kilhog` + `pogig`) per OS/arch and publish a GitHub Release with `.tar.gz` / `.zip` assets and `checksums.txt`; (2) build a multi-arch (`linux/amd64`, `linux/arm64`) Docker image and push it to Docker Hub |
 
 Go version is taken from `go.mod` via `actions/setup-go` (`go-version-file`). Builds use `CGO_ENABLED=0` for portable static binaries.
 
@@ -1022,13 +1022,47 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
+### Docker Hub publish (release tags)
+
+The **Release** workflow job `Publish Docker Hub image` logs in to Docker Hub, builds the image from the root `Dockerfile`, and pushes it. Image tags for a Git tag `v1.2.3` (stable semver, not a pre-release):
+
+| Docker tag | Example |
+|------------|---------|
+| `{{version}}` | `1.2.3` |
+| `{{major}}.{{minor}}` | `1.2` |
+| `{{major}}` | `1` |
+| `latest` | added automatically for non-prerelease semver tags |
+
+Pre-release tags such as `v1.2.3-rc.1` are published without moving `latest`.
+
+Default image name: `{DOCKERHUB_USERNAME}/kilhog` (for example `alice/kilhog`). Override with the repository variable `DOCKERHUB_IMAGE` when the Hub namespace differs from the login username (for example `kilhog/kilhog`).
+
+#### GitHub Actions secrets and variables
+
+Configure these on the GitHub repository: **Settings → Secrets and variables → Actions**.
+
+**Repository secrets** (Secrets tab → New repository secret):
+
+| Secret | Required | Value |
+|--------|----------|-------|
+| `DOCKERHUB_USERNAME` | yes | Docker Hub username used to log in |
+| `DOCKERHUB_TOKEN` | yes | Docker Hub [access token](https://hub.docker.com/settings/security) with Read & Write permission (Account Settings → Personal access tokens). Do not use the account password. |
+
+**Repository variable** (Variables tab → New repository variable), optional:
+
+| Variable | Required | Value |
+|----------|----------|-------|
+| `DOCKERHUB_IMAGE` | no | Full image name without a tag, e.g. `kilhog/kilhog`. When unset, the workflow uses `{DOCKERHUB_USERNAME}/kilhog`. |
+
+Create the target repository on Docker Hub (or allow the token to create it) before the first tagged release. The CI workflow still only *builds* the image to catch Dockerfile regressions; it never logs in or pushes.
+
 ## Docker image
 
 The root `Dockerfile` produces a **minimal scratch image** for the API server via a **multi-stage build**:
 
 | Stage | Base | Role |
 |-------|------|------|
-| `builder` | `golang:1.26-alpine` | Download modules, compile a static binary (`CGO_ENABLED=0`), install CA certificates |
+| `builder` | `golang:1.26-alpine` (`--platform=$BUILDPLATFORM`) | Download modules, cross-compile a static binary (`CGO_ENABLED=0`, `TARGETOS` / `TARGETARCH`), install CA certificates |
 | final | `scratch` | Copy only `/kilhog`, CA certs, and an empty `/data` directory |
 
 Design notes:
@@ -1037,6 +1071,7 @@ Design notes:
 - **TLS**: CA certificates are copied so PostgreSQL (and other) TLS connections work from the container.
 - **Non-root**: the process runs as UID/GID `65532`; SQLite defaults to `file:/data/kilhog.db?_pragma=foreign_keys(ON)`.
 - **Binary only**: the image contains the API server (`cmd/kilhog`), not the pogig CLI.
+- **Multi-arch**: the builder stage uses BuildKit `TARGETOS` / `TARGETARCH` so release images can be `linux/amd64` and `linux/arm64`. Local `make docker-build` still produces a single-arch `kilhog:local` image.
 
 Build and run:
 
