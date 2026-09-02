@@ -11,7 +11,7 @@
 ```
 kilhog/
 ├── cmd/
-│   ├── kilhog/          # API server entry point (main.go)
+│   ├── kilhog/          # API server entry point (main.go, SIGTERM shutdown)
 │   ├── kilhog-worker/   # Cloudflare Workers WASM entry point (GOOS=js GOARCH=wasm)
 │   └── pogig/           # CLI entry point (Breton for "chick")
 │       └── internal/cmd/ # Cobra commands (network, subnet, health)
@@ -142,12 +142,31 @@ API calls may arrive in parallel. The `db.Store` layer provides:
 | `WithTx` / `WithWriteTx` | Atomic SQL transactions |
 | `AcquireMigrationLock` | Exclusive lock during migrations (SQLite mutex, PostgreSQL `pg_advisory_lock`) |
 | WAL + `busy_timeout` (SQLite) | Readers not blocked by writers |
+| `Flush` / `Close` | On SIGTERM, checkpoint SQLite WAL (`TRUNCATE`) then close the file |
 
 Mutations (`Create`, `Update`, `Delete`) go through `WithWriteTx`: SQLite write lock + SQL transaction. Reads (`Get*`, `List*`) use the pool directly.
 
 Subnet creation with auto-allocated addresses uses `SubnetRepository.CreateAtomically`: sibling listing, overlap validation, and insert run in the same write transaction. The parent row is locked (`SELECT … FOR UPDATE` on PostgreSQL; SQLite relies on the application write mutex) so parallel creates under the same parent cannot pick the same CIDR.
 
 On PostgreSQL, the SQLite application lock is disabled: concurrency is handled by MVCC and SQL transactions.
+
+### Graceful shutdown (Cloud Run / SIGTERM)
+
+Cloud Run sends **SIGTERM**, waits **10 seconds**, then **SIGKILL**. The native API server (`cmd/kilhog`) handles `SIGTERM` and `SIGINT` so SQLite is synchronized and the file is closed before the process exits.
+
+Sequence (`cmd/kilhog/shutdown.go`):
+
+1. Log the received signal and stop the metrics refresh loop.
+2. **Stop HTTP** with `http.Server.Shutdown` (timeout **8s**). In-flight requests can finish. If the timeout expires, `http.Server.Close` force-closes remaining connections. This leaves **2s** of the Cloud Run window for the database.
+3. **Synchronize SQLite** with `PRAGMA wal_checkpoint(TRUNCATE)` (`db.Store.Flush`): WAL pages are merged into the main `.db` file and the WAL is truncated. Idle pooled connections are dropped so the checkpoint can complete. PostgreSQL and D1 are no-ops.
+4. **Close the database handle** (`db.Store.CloseContext`): closes the SQLite file (or PostgreSQL pool). Subsequent `Close` / `Flush` calls are no-ops.
+5. Return from `main` so remaining defers run (metrics provider shutdown, ~1s). The process then exits.
+
+`db.Store.Close` always checkpoints SQLite before closing the handle (bounded by `DefaultSQLiteFlushTimeout`, 2s), including test teardown and startup-failure paths.
+
+Do **not** `os.Exit` after SIGTERM: that would skip defers. HTTP shutdown failure is logged; the process still flushes and closes the database.
+
+This matters for WAL on a volume (Cloud Run volume / NFS / local disk): after a clean shutdown the durable state is in `kilhog.db`, not a leftover `-wal` sidecar that a new instance might not see.
 
 ### Cloudflare D1 notes
 
@@ -885,7 +904,7 @@ Logging uses the standard library `log/slog` with a text handler on stderr. Conf
 | Level   | HTTP requests | Other events |
 |---------|---------------|--------------|
 | `debug` | Method, path, status, duration, headers (`Authorization` / `X-API-Key` / `Cookie` redacted), request body, response body | Migration details, startup/shutdown |
-| `info`  | Method, path, status, duration (one line per request) | Startup, migrations applied, shutdown |
+| `info`  | Method, path, status, duration (one line per request) | Startup, migrations applied, SIGTERM shutdown, SQLite sync, database closed |
 | `warn`  | — | Warnings (e.g. database close failure) |
 | `error` | — | Fatal configuration or runtime errors |
 | `off`   | — | No logs |
@@ -1086,6 +1105,8 @@ docker run --rm -p 8080:8080 \
 ```
 
 Override database settings with the usual env vars (`KILHOG_DB_DRIVER`, `KILHOG_DB_DSN`, …). Mount `/data` (or point `KILHOG_DB_DSN` at another writable path) when using SQLite so the database survives container restarts.
+
+The binary is PID 1 in the scratch image, so it receives Cloud Run's **SIGTERM** directly. On that signal it drains HTTP (8s), checkpoints the SQLite WAL into `/data/kilhog.db`, closes the file, and exits before the 10s SIGKILL. See [Graceful shutdown (Cloud Run / SIGTERM)](#graceful-shutdown-cloud-run--sigterm).
 ## Go SDK (`pkg/kilhog`)
 
 The public Go SDK wraps the kilhog REST API. It is consumed by **pogig** and is designed for reuse by external Go projects, including the **Terraform provider** (maintained in a separate Git repository).

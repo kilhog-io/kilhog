@@ -47,7 +47,7 @@ func Open(ctx context.Context, cfg db.Config) (*Repositories, error) {
 }
 
 func (r *Repositories) Close() error {
-	if r.Store == nil {
+	if r == nil || r.Store == nil {
 		return nil
 	}
 	return r.Store.Close()
