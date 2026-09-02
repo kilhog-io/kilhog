@@ -3,7 +3,7 @@
 # Multi-stage build: compile a static kilhog binary, then ship it in a
 # scratch image (no shell, no package manager, minimal attack surface).
 
-FROM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 WORKDIR /src
 
@@ -15,8 +15,12 @@ RUN go mod download
 
 COPY . .
 
+# BuildKit sets TARGETOS/TARGETARCH for multi-platform images.
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+
 # modernc.org/sqlite is pure Go — no CGO required for a static binary.
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 	-trimpath \
 	-ldflags="-s -w" \
 	-o /out/kilhog \
