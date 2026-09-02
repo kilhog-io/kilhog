@@ -53,7 +53,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		if err := metricsProvider.Shutdown(shutdownCtx); err != nil {
 			slog.Warn("metrics shutdown failed", "error", err)
@@ -131,17 +131,12 @@ func main() {
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
-
-	slog.Info("shutting down")
+	sig := <-stop
+	slog.Info("shutdown signal received", "signal", sig.String())
 	stopRefresh()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		slog.Error("server shutdown failed", "error", err)
-		os.Exit(1)
+	if err := gracefulShutdown(server, repos.Store); err != nil {
+		slog.Error("graceful shutdown failed", "error", err)
 	}
 }
 

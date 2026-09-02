@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
+	"time"
 )
 
 type Store struct {
@@ -17,12 +18,109 @@ func NewStore(db *sql.DB, dialect Dialect) *Store {
 	return &Store{DB: db, Dialect: dialect}
 }
 
+// DefaultSQLiteFlushTimeout bounds WAL checkpoint retries when Close has no
+// deadline. Cloud Run sends SIGKILL 10s after SIGTERM; HTTP shutdown leaves
+// this window to synchronize and close the SQLite file.
+const DefaultSQLiteFlushTimeout = 2 * time.Second
+
 func (s *Store) Ping(ctx context.Context) error {
-	return s.DB.PingContext(ctx)
+	if s == nil {
+		return fmt.Errorf("database is closed")
+	}
+
+	s.writeMu.Lock()
+	sqlDB := s.DB
+	s.writeMu.Unlock()
+
+	if sqlDB == nil {
+		return fmt.Errorf("database is closed")
+	}
+	return sqlDB.PingContext(ctx)
 }
 
+// Flush persists pending SQLite WAL pages into the main database file.
+// It is a no-op for PostgreSQL and Cloudflare D1.
+//
+// On SQLite, idle pooled connections are dropped so TRUNCATE checkpoint can
+// complete, then PRAGMA wal_checkpoint(TRUNCATE) is retried until the WAL is
+// fully merged or ctx is done. Call this before Close on SIGTERM so Cloud Run
+// does not SIGKILL the process with an unsynced WAL.
+func (s *Store) Flush(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	if s.DB == nil || s.Dialect != DialectSQLite {
+		return nil
+	}
+
+	// Other pooled connections can keep WAL readers alive and make TRUNCATE
+	// report busy. Drop idles and cap the pool to a single connection.
+	s.DB.SetMaxIdleConns(0)
+	s.DB.SetMaxOpenConns(1)
+
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		var busy, logFrames, checkpointed int
+		err := s.DB.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &checkpointed)
+		if err != nil {
+			return fmt.Errorf("checkpoint sqlite wal: %w", err)
+		}
+		if busy == 0 {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("checkpoint sqlite wal: still busy (log=%d checkpointed=%d): %w", logFrames, checkpointed, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+// Close checkpoints SQLite (see Flush) then closes the database handle.
+// Subsequent Close/Flush calls are no-ops.
 func (s *Store) Close() error {
-	return s.DB.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultSQLiteFlushTimeout)
+	defer cancel()
+	return s.CloseContext(ctx)
+}
+
+// CloseContext is Close with an explicit deadline for the SQLite WAL checkpoint.
+func (s *Store) CloseContext(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+
+	flushErr := s.Flush(ctx)
+
+	s.writeMu.Lock()
+	sqlDB := s.DB
+	s.DB = nil
+	s.writeMu.Unlock()
+
+	if sqlDB == nil {
+		return flushErr
+	}
+
+	if err := sqlDB.Close(); err != nil {
+		if flushErr != nil {
+			return fmt.Errorf("flush sqlite: %w (close database: %v)", flushErr, err)
+		}
+		return fmt.Errorf("close database: %w", err)
+	}
+	if flushErr != nil {
+		return fmt.Errorf("flush sqlite: %w", flushErr)
+	}
+	return nil
 }
 
 func (s *Store) Querier() Querier {
