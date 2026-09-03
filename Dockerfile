@@ -32,7 +32,7 @@ RUN mkdir -p /out/data /out/tmp && chown 65532:65532 /out/data /out/tmp
 FROM scratch
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder --chown 65532:65532 --chmod=755 /out/kilhog /kilhog
+COPY --from=builder --chown=65532:65532 --chmod=755 /out/kilhog /kilhog
 COPY --from=builder --chown=65532:65532 /out/data /data
 COPY --from=builder --chown=65532:65532 /out/tmp /tmp
 
