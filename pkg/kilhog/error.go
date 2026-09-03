@@ -35,9 +35,9 @@ func gatewayErrorMessage(statusCode int, raw []byte) string {
 		return message
 	}
 	return message + "; request was blocked before reaching the kilhog API " +
-		"(load balancer or WAF). If Cloud Armor is enabled, set jsonParsing=STANDARD " +
-		"on the security policy so IPAM JSON bodies are not matched as SQL injection " +
-		"(OWASP CRS 942200)"
+		"(load balancer or WAF). If Cloud Armor is enabled, set jsonParsing=STANDARD, " +
+		"SQLi sensitivity 1, and exclude IPAM JSON fields (name, description, address, " +
+		"prefix, type, tags) from sqli-v33-stable — hyphenated names match CRS 942432"
 }
 
 func statusFromCode(code int) int {

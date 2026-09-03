@@ -161,7 +161,7 @@ func TestClientGatewayForbiddenHint(t *testing.T) {
 	if !strings.Contains(apiErr.Message, "jsonParsing=STANDARD") {
 		t.Fatalf("expected Cloud Armor JSON parsing hint, got %q", apiErr.Message)
 	}
-	if !strings.Contains(apiErr.Message, "942200") {
-		t.Fatalf("expected OWASP CRS 942200 hint, got %q", apiErr.Message)
+	if !strings.Contains(apiErr.Message, "942432") {
+		t.Fatalf("expected OWASP CRS 942432 hint, got %q", apiErr.Message)
 	}
 }
