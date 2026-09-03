@@ -139,7 +139,7 @@ func (c *Client) do(ctx context.Context, method, path string, reqBody any, respD
 			}
 			return newAPIError(statusFromCode(code), envelope.Message)
 		}
-		return newAPIError(resp.StatusCode, strings.TrimSpace(string(raw)))
+		return newAPIError(resp.StatusCode, gatewayErrorMessage(resp.StatusCode, raw))
 	}
 
 	if respData == nil {

@@ -1154,7 +1154,7 @@ client, err := kilhog.NewClientFromEnv()
 | `ListSubnets`, `GetSubnet`, `CreateSubnetInNetwork`, `UpdateSubnet`, `DeleteSubnet` | `/networks/{uuid}/subnets` … |
 | `CreateSubnetUnderParent`, `ListChildSubnets` | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` … |
 
-Errors from the API are returned as `*kilhog.APIError` with the HTTP status code and server message.
+Errors from the API are returned as `*kilhog.APIError` with the HTTP status code and server message. A **403** whose body is not the kilhog error envelope (HTML or empty, typical of Cloud Armor `deny-403`) includes a hint to enable JSON parsing on the security policy; see [Load balancer and Cloud Armor](#load-balancer-and-cloud-armor).
 
 ### Terraform provider (external project)
 
@@ -1307,6 +1307,58 @@ terraform apply
 ```
 
 `image` must already exist in a registry Cloud Run can pull (typically Artifact Registry in the same project). After apply, `terraform output service_uri` is the public HTTPS URL.
+
+### Load balancer and Cloud Armor
+
+When Cloud Run is published behind an HTTP(S) load balancer with a Cloud Armor security policy, preconfigured WAF rules can **false-positive on legitimate IPAM JSON**. The request never reaches Cloud Run (`deny-403`).
+
+Reference policy: `terraform/cloud_armor.tf`.
+
+#### False positive 1 — raw JSON vs CRS 942200
+
+Without JSON parsing, Cloud Armor inspects the entire body as one string. A typical subnet create:
+
+```json
+{"name":"dmz","prefix":24,"address":"10.0.0.0","type":"ipv4"}
+```
+
+matches **942200** (`owasp-crs-v030301-id942200-sqli`, paranoia level 2) on the comma-separated object shape. Individual values (`10.0.0.0`, `24`, `ipv4`) do not match. Network create with `{"name":"lab"}` often still works because it has no comma.
+
+**Fix:** set `jsonParsing=STANDARD` so each JSON field is inspected on its own.
+
+```bash
+gcloud compute security-policies update kilhog-armor \
+  --region=REGION \
+  --json-parsing=STANDARD \
+  --log-level=VERBOSE
+```
+
+Use `--region` for a **regional** external HTTP(S) load balancer (`http_external_regional_lb_rule` in the deny log). Confirm `advancedOptionsConfig.jsonParsing` is `STANDARD`.
+
+#### False positive 2 — hyphenated names vs CRS 942432
+
+After JSON parsing is on, the WAF inspects `name` as `ARG_VALUES`. Default Cloud Armor sensitivity is **4** (all CRS paranoia levels). Rule **942432** (`owasp-crs-v030301-id942432-sqli`, paranoia level 4) is *Restricted SQL Character Anomaly Detection: 2 special characters*. Hyphens count. A name such as `prod-databases-east1` matches `-databases-` and is denied.
+
+**Fix:** use `evaluatePreconfiguredWaf` at **sensitivity 1** (high-confidence signatures only), and exclude IPAM JSON fields from SQLi inspection. Names, descriptions, and tags routinely contain hyphens and words like `database`; `address` / `prefix` are dotted numbers.
+
+Replace a combined stanza such as:
+
+```hcl
+expression = "evaluatePreconfiguredExpr('sqli-v33-stable') || evaluatePreconfiguredExpr('xss-v33-stable')"
+```
+
+with the rules in `terraform/cloud_armor.tf` (all three must be in the same `rules` list):
+
+- priority **2147483647**: default `allow` with `versioned_expr = "SRC_IPS_V1"` and `src_ip_ranges = ["*"]`. The Cloud Armor API rejects any update that lists `rules` without this rule (`Every security policy must have a default rule at priority 2147483647 with match condition *`).
+- priority 1000: `evaluatePreconfiguredWaf('sqli-v33-stable', {'sensitivity': 1})` plus `preconfigured_waf_config` exclusions on `name`, `description`, `address`, `prefix`, `type`, `tags`
+- priority 1001: XSS at sensitivity 1, exclusions on `name`, `description`, `tags`
+- `advanced_options_config.json_parsing = "STANDARD"`
+
+Do **not** change REST field names or switch to form encoding to dodge signatures. Headers, cookies, and the URL remain covered.
+
+#### Client error
+
+When a gateway returns 403 with a body that is not the kilhog `{status, message, code}` envelope, the Go SDK wraps it as `*APIError` and mentions Cloud Armor JSON parsing and IPAM field exclusions so the operator can distinguish a WAF deny from `authentication is not configured`.
 
 ### Development HTTP scripts
 
