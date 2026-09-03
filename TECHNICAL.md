@@ -1345,14 +1345,7 @@ gcloud compute security-policies describe kilhog-armor --region=REGION
 
 `advancedOptionsConfig.jsonParsing` must be `STANDARD` (or `STANDARD_WITH_GRAPHQL`).
 
-Terraform equivalent (`google_compute_region_security_policy` or `google_compute_security_policy`):
-
-```hcl
-advanced_options_config {
-  json_parsing = "STANDARD"
-  log_level    = "VERBOSE"
-}
-```
+Terraform equivalent: see `terraform/cloud_armor.tf` which defines a `google_compute_region_security_policy` with `json_parsing = "STANDARD"`, SQLi (942200 opted out) and XSS rules split on separate priorities.
 
 After this change, `POST /networks/{uuid}/subnets` with a normal IPv4 payload must succeed. Do **not** change the REST field names or switch to form encoding to dodge the signature.
 
