@@ -13,6 +13,26 @@ resource "google_compute_region_security_policy" "kilhog" {
     log_level    = "VERBOSE"
   }
 
+  # Required: a RegionSecurityPolicy update that lists `rules` must include
+  # this default rule. Omitting it returns:
+  #   Every security policy must have a default rule at priority 2147483647
+  #   with match condition *.
+  # Keep whatever action you already use (allow or deny). Do not change the
+  # priority or the SRC_IPS_V1 / * match.
+  rules {
+    action      = "allow"
+    priority    = "2147483647"
+    description = "Default allow"
+
+    match {
+      versioned_expr = "SRC_IPS_V1"
+
+      config {
+        src_ip_ranges = ["*"]
+      }
+    }
+  }
+
   # Sensitivity 1 = CRS paranoia level 1 only. Default sensitivity 4 includes
   # 942432 (PL4: two special characters in an argument), which matches
   # hyphenated subnet names such as "prod-databases-east1".
@@ -90,20 +110,6 @@ resource "google_compute_region_security_policy" "kilhog" {
           operator = "EQUALS"
           value    = "tags"
         }
-      }
-    }
-  }
-
-  rules {
-    action      = "allow"
-    priority    = "2147483647"
-    description = "Default allow"
-
-    match {
-      versioned_expr = "SRC_IPS_V1"
-
-      config {
-        src_ip_ranges = ["*"]
       }
     }
   }
