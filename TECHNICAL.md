@@ -1347,8 +1347,9 @@ Replace a combined stanza such as:
 expression = "evaluatePreconfiguredExpr('sqli-v33-stable') || evaluatePreconfiguredExpr('xss-v33-stable')"
 ```
 
-with the rules in `terraform/cloud_armor.tf`:
+with the rules in `terraform/cloud_armor.tf` (all three must be in the same `rules` list):
 
+- priority **2147483647**: default `allow` with `versioned_expr = "SRC_IPS_V1"` and `src_ip_ranges = ["*"]`. The Cloud Armor API rejects any update that lists `rules` without this rule (`Every security policy must have a default rule at priority 2147483647 with match condition *`).
 - priority 1000: `evaluatePreconfiguredWaf('sqli-v33-stable', {'sensitivity': 1})` plus `preconfigured_waf_config` exclusions on `name`, `description`, `address`, `prefix`, `type`, `tags`
 - priority 1001: XSS at sensitivity 1, exclusions on `name`, `description`, `tags`
 - `advanced_options_config.json_parsing = "STANDARD"`
