@@ -1154,7 +1154,7 @@ client, err := kilhog.NewClientFromEnv()
 | `ListSubnets`, `GetSubnet`, `CreateSubnetInNetwork`, `UpdateSubnet`, `DeleteSubnet` | `/networks/{uuid}/subnets` … |
 | `CreateSubnetUnderParent`, `ListChildSubnets` | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` … |
 
-Errors from the API are returned as `*kilhog.APIError` with the HTTP status code and server message.
+Errors from the API are returned as `*kilhog.APIError` with the HTTP status code and server message. A **403** whose body is not the kilhog error envelope (HTML or empty, typical of Cloud Armor `deny-403`) includes a hint to enable JSON parsing on the security policy; see [Load balancer and Cloud Armor](#load-balancer-and-cloud-armor).
 
 ### Terraform provider (external project)
 
@@ -1307,6 +1307,91 @@ terraform apply
 ```
 
 `image` must already exist in a registry Cloud Run can pull (typically Artifact Registry in the same project). After apply, `terraform output service_uri` is the public HTTPS URL.
+
+### Load balancer and Cloud Armor
+
+When Cloud Run is published behind an HTTP(S) load balancer with a Cloud Armor security policy, **preconfigured WAF rules inspect the raw request body unless JSON parsing is enabled**.
+
+kilhog clients (`pogig`, the Go SDK, Terraform provider) send `Content-Type: application/json` bodies. A typical subnet create looks like:
+
+```json
+{"name":"dmz","prefix":24,"address":"10.0.0.0","type":"ipv4"}
+```
+
+OWASP CRS rule **942200** (*Detects MySQL comment-/space-obfuscated injections and backtick termination*, Cloud Armor id `owasp-crs-v030301-id942200-sqli`) treats that unparsed JSON as a single string. The signature matches the comma-separated object shape (quoted keys whose names end in a hex letter such as `name` / `type`, numeric `prefix`, dotted `address` values). The load balancer then returns **403** and the request never reaches Cloud Run.
+
+Network create often still works: a body such as `{"name":"lab"}` has no comma, and `{"name":"lab","description":"Lab network"}` does not contain the digit-or-hex-then-quote pattern after a comma.
+
+This is a **false positive**. Individual field values (`10.0.0.0`, `24`, `ipv4`, `dmz`) do not match 942200. The match is the raw JSON syntax.
+
+#### Required: enable JSON parsing
+
+Parse `application/json` bodies into named parameters before WAF evaluation so each field is inspected on its own:
+
+```bash
+gcloud compute security-policies update kilhog-armor \
+  --region=REGION \
+  --json-parsing=STANDARD \
+  --log-level=VERBOSE
+```
+
+Use `--region` for a **regional** external HTTP(S) load balancer (the policy type in the deny log is `http_external_regional_lb_rule`). Omit `--region` only for a global security policy.
+
+Confirm:
+
+```bash
+gcloud compute security-policies describe kilhog-armor --region=REGION
+```
+
+`advancedOptionsConfig.jsonParsing` must be `STANDARD` (or `STANDARD_WITH_GRAPHQL`).
+
+Terraform equivalent (`google_compute_region_security_policy` or `google_compute_security_policy`):
+
+```hcl
+advanced_options_config {
+  json_parsing = "STANDARD"
+  log_level    = "VERBOSE"
+}
+```
+
+After this change, `POST /networks/{uuid}/subnets` with a normal IPv4 payload must succeed. Do **not** change the REST field names or switch to form encoding to dodge the signature.
+
+#### If 942200 still matches
+
+JSON parsing is the primary fix. If a remaining field value is still noisy (free-text `description`, nested `tags` JSON), tune the existing deny rule (priority **1000** in a typical `kilhog-armor` policy) instead of disabling the whole SQLi set:
+
+1. Opt out this signature only (keep other SQLi signatures):
+
+```bash
+gcloud compute security-policies rules update 1000 \
+  --security-policy=kilhog-armor \
+  --region=REGION \
+  --expression="evaluatePreconfiguredWaf('sqli-v33-stable', {'opt_out_rule_ids': ['owasp-crs-v030301-id942200-sqli']})"
+```
+
+Read the current rule expression first (`gcloud compute security-policies describe`) and merge `opt_out_rule_ids` into it. A bare `update` overwrites the match expression.
+
+2. Or exclude IPAM JSON fields from inspection for that signature (`address`, `prefix`, `name`, `description`, `type`, `tags` become query parameters once JSON parsing is on):
+
+```bash
+gcloud compute security-policies rules add-preconfig-waf-exclusion 1000 \
+  --security-policy=kilhog-armor \
+  --region=REGION \
+  --target-rule-set=sqli-v33-stable \
+  --target-rule-ids=owasp-crs-v030301-id942200-sqli \
+  --request-query-param-to-exclude=op=EQUALS,val=address \
+  --request-query-param-to-exclude=op=EQUALS,val=prefix \
+  --request-query-param-to-exclude=op=EQUALS,val=name \
+  --request-query-param-to-exclude=op=EQUALS,val=description \
+  --request-query-param-to-exclude=op=EQUALS,val=type \
+  --request-query-param-to-exclude=op=EQUALS,val=tags
+```
+
+Prefer lowering SQLi sensitivity to **1** (CRS paranoia level 1) over running the default sensitivity **4**. Rule 942200 is paranoia level 2, so sensitivity 1 also stops this false positive while keeping high-confidence SQLi signatures.
+
+#### Client error
+
+When a gateway returns 403 with a body that is not the kilhog `{status, message, code}` envelope, the Go SDK wraps it as `*APIError` and mentions Cloud Armor JSON parsing and CRS 942200 so the operator can distinguish a WAF deny from `authentication is not configured`.
 
 ### Development HTTP scripts
 
