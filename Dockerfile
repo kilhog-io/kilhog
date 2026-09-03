@@ -27,13 +27,14 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 	./cmd/kilhog
 
 # Writable data directory for the non-root user in the final image.
-RUN mkdir -p /out/data && chown 65532:65532 /out/data
+RUN mkdir -p /out/data /out/tmp && chown 65532:65532 /out/data /out/tmp
 
 FROM scratch
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /out/kilhog /kilhog
+COPY --from=builder --chown 65532:65532 --chmod=755 /out/kilhog /kilhog
 COPY --from=builder --chown=65532:65532 /out/data /data
+COPY --from=builder --chown=65532:65532 /out/tmp /tmp
 
 ENV KILHOG_HOST=0.0.0.0 \
 	KILHOG_PORT=8080 \

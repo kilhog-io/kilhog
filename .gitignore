@@ -7,3 +7,15 @@ scripts/dev/*.uuid
 workers/node_modules/
 workers/build/
 workers/.wrangler/
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json

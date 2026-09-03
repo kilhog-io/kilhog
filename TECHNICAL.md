@@ -36,6 +36,7 @@ kilhog/
 │   └── dev/             # HTTP scripts for local development
 ├── Dockerfile           # Multi-stage build → scratch image for the API server
 ├── .dockerignore        # Build context exclusions for Docker
+├── terraform/           # GCP Cloud Run + GCS (SQLite) deployment
 ├── FUNCTIONAL.md        # Business rules (defined by the user)
 └── TECHNICAL.md         # This file
 ```
@@ -1255,6 +1256,57 @@ go run ./cmd/kilhog
 ```
 
 Uses the same defaults as `run-dev` (`sqlite`, DSN `file:kilhog.db?_pragma=foreign_keys(ON)`).
+
+### GCP Cloud Run (SQLite on Cloud Storage)
+
+The `terraform/` root module deploys a **public** Cloud Run service that mounts a Cloud Storage bucket for the SQLite file (`KILHOG_DB_DRIVER=sqlite`, DSN `file:/mnt/sqlite/kilhog.db?_pragma=foreign_keys(ON)`).
+
+This matches the lightweight SQLite deployment path in `FUNCTIONAL.md`. GCS FUSE is **not** POSIX-compliant (no file locking); the service is therefore capped at **one instance**. For multi-instance production, use PostgreSQL instead of this stack.
+
+#### APIs (enabled by Terraform)
+
+| API | Purpose |
+|-----|---------|
+| `run.googleapis.com` | Cloud Run |
+| `storage.googleapis.com` | Bucket + GCS FUSE volume mount |
+| `iam.googleapis.com` | Service accounts and IAM |
+| `iamcredentials.googleapis.com` | Service-account credentials |
+| `cloudresourcemanager.googleapis.com` | Project IAM from Terraform |
+| `artifactregistry.googleapis.com` | Pull the container image |
+| `secretmanager.googleapis.com` | `KILHOG_API_KEY` |
+| `serviceusage.googleapis.com` | Enable the APIs |
+
+#### Resources
+
+| Resource | Role |
+|----------|------|
+| `google_service_account.runtime` (`{service}-run`) | Cloud Run / GCS FUSE runtime identity |
+| `google_storage_bucket.sqlite` | Regional bucket for `kilhog.db` (versioned, public access prevented) |
+| `google_secret_manager_secret.api_key` | Optional API key (created only when `api_key` is set) |
+| `google_cloud_run_v2_service.kilhog` | Public gen2 service, bucket mounted at `/mnt/sqlite` |
+
+#### IAM
+
+| Principal | Role | Resource |
+|-----------|------|----------|
+| Runtime SA | `roles/storage.objectUser` | SQLite bucket (read/write `kilhog.db`, `-wal`, `-shm`) |
+| Runtime SA | `roles/secretmanager.secretAccessor` | API key secret (when configured) |
+| Cloud Run service agent `service-{PROJECT_NUMBER}@serverless-robot.iam.gserviceaccount.com` | `roles/iam.serviceAccountUser` | Runtime SA (required to deploy a revision that uses it) |
+| Cloud Run service agent | `roles/artifactregistry.reader` | Project (pull the container image) |
+| `allUsers` | `roles/run.invoker` | Cloud Run service (unauthenticated HTTP) |
+
+The bucket itself is **not** public (`public_access_prevention = enforced`). Application-level protection is `KILHOG_API_KEY`. A Domain Restricted Sharing organization policy can block `allUsers`; grant an exception on the project if `terraform apply` fails on the invoker binding.
+
+#### Apply
+
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars   # set project_id, image, api_key
+terraform init
+terraform apply
+```
+
+`image` must already exist in a registry Cloud Run can pull (typically Artifact Registry in the same project). After apply, `terraform output service_uri` is the public HTTPS URL.
 
 ### Development HTTP scripts
 
