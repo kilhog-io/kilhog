@@ -28,11 +28,11 @@ const (
 
 // AuthConfig holds deployment settings for authentication.
 type AuthConfig struct {
-	APIKey          string
-	BootstrapToken  string
-	PublicURL       string
-	SessionTTL      time.Duration
-	HTTPClient      *http.Client
+	APIKey         string
+	BootstrapToken string
+	PublicURL      string
+	SessionTTL     time.Duration
+	HTTPClient     *http.Client
 }
 
 // Principal is the authenticated caller attached to a request.
@@ -44,6 +44,12 @@ type Principal struct {
 	OIDCEmail        string              `json:"oidc_email,omitempty"`
 	OIDCName         string              `json:"oidc_name,omitempty"`
 	SessionUUID      *uuid.UUID          `json:"session_uuid,omitempty"`
+	MachinePoolUUID  *uuid.UUID          `json:"machine_pool_uuid,omitempty"`
+	MachineUUID      *uuid.UUID          `json:"machine_uuid,omitempty"`
+	MachineName      string              `json:"machine_name,omitempty"`
+	AuthMethod       string              `json:"auth_method,omitempty"`
+	Issuer           string              `json:"issuer,omitempty"`
+	Subject          string              `json:"subject,omitempty"`
 }
 
 func (p *Principal) IsAdmin() bool {
@@ -59,11 +65,12 @@ type SessionToken struct {
 
 // AuthStatus describes whether authentication methods are available.
 type AuthStatus struct {
-	Configured         bool `json:"configured"`
-	APIKeyConfigured   bool `json:"api_key_configured"`
-	LocalUsers         int  `json:"local_users"`
-	EnabledOIDCPools   int  `json:"enabled_oidc_pools"`
-	BootstrapAvailable bool `json:"bootstrap_available"`
+	Configured          bool `json:"configured"`
+	APIKeyConfigured    bool `json:"api_key_configured"`
+	LocalUsers          int  `json:"local_users"`
+	EnabledOIDCPools    int  `json:"enabled_oidc_pools"`
+	EnabledMachinePools int  `json:"enabled_machine_pools"`
+	BootstrapAvailable  bool `json:"bootstrap_available"`
 }
 
 type AuthService struct {
@@ -71,10 +78,18 @@ type AuthService struct {
 	pools       IdentityPoolRepository
 	sessions    SessionRepository
 	loginStates OIDCLoginStateRepository
+	machines    MachineAuthenticator
 	cfg         AuthConfig
 
 	providersMu sync.Mutex
 	providers   map[string]*oidc.Provider
+}
+
+// MachineAuthenticator authenticates named machine identities.
+type MachineAuthenticator interface {
+	AuthenticateAPIKey(ctx context.Context, raw string) (*Principal, error)
+	AuthenticateJWT(ctx context.Context, raw string) (*Principal, error)
+	CountEnabledPools(ctx context.Context) (int, error)
 }
 
 func NewAuthService(
@@ -82,6 +97,7 @@ func NewAuthService(
 	pools IdentityPoolRepository,
 	sessions SessionRepository,
 	loginStates OIDCLoginStateRepository,
+	machines MachineAuthenticator,
 	cfg AuthConfig,
 ) *AuthService {
 	if cfg.SessionTTL <= 0 {
@@ -96,6 +112,7 @@ func NewAuthService(
 		pools:       pools,
 		sessions:    sessions,
 		loginStates: loginStates,
+		machines:    machines,
 		cfg:         cfg,
 		providers:   map[string]*oidc.Provider{},
 	}
@@ -112,13 +129,21 @@ func (s *AuthService) Status(ctx context.Context) (*AuthStatus, error) {
 	if err != nil {
 		return nil, fmt.Errorf("count oidc pools: %w", err)
 	}
+	machinePools := 0
+	if s.machines != nil {
+		machinePools, err = s.machines.CountEnabledPools(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("count machine pools: %w", err)
+		}
+	}
 	apiKey := strings.TrimSpace(s.cfg.APIKey) != ""
 	return &AuthStatus{
-		Configured:         apiKey || users > 0 || pools > 0,
-		APIKeyConfigured:   apiKey,
-		LocalUsers:         users,
-		EnabledOIDCPools:   pools,
-		BootstrapAvailable: users == 0,
+		Configured:          apiKey || users > 0 || pools > 0 || machinePools > 0,
+		APIKeyConfigured:    apiKey,
+		LocalUsers:          users,
+		EnabledOIDCPools:    pools,
+		EnabledMachinePools: machinePools,
+		BootstrapAvailable:  users == 0,
 	}, nil
 }
 
@@ -131,11 +156,11 @@ func (s *AuthService) IsConfigured(ctx context.Context) (bool, error) {
 }
 
 type BootstrapInput struct {
-	Username        string
-	Password        string
-	DisplayName     string
-	Email           string
-	BootstrapToken  string
+	Username       string
+	Password       string
+	DisplayName    string
+	Email          string
+	BootstrapToken string
 }
 
 func (s *AuthService) Bootstrap(ctx context.Context, input BootstrapInput) (*model.LocalUser, *SessionToken, error) {
@@ -226,6 +251,21 @@ func (s *AuthService) AuthenticateRequest(ctx context.Context, apiKeyHeader, bea
 		}
 	}
 
+	if s.machines != nil {
+		for _, candidate := range []string{strings.TrimSpace(apiKeyHeader), strings.TrimSpace(bearerToken)} {
+			if candidate == "" || looksLikeJWT(candidate) {
+				continue
+			}
+			principal, err := s.machines.AuthenticateAPIKey(ctx, candidate)
+			if err == nil {
+				return principal, nil
+			}
+			if !errors.Is(err, ErrUnauthenticated) {
+				return nil, err
+			}
+		}
+	}
+
 	for _, raw := range []string{bearerToken, sessionCookie} {
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
@@ -239,6 +279,13 @@ func (s *AuthService) AuthenticateRequest(ctx context.Context, apiKeyHeader, bea
 	}
 
 	if bearerToken != "" && looksLikeJWT(bearerToken) {
+		if s.machines != nil {
+			if principal, err := s.machines.AuthenticateJWT(ctx, bearerToken); err == nil {
+				return principal, nil
+			} else if !errors.Is(err, ErrUnauthenticated) {
+				return nil, err
+			}
+		}
 		if principal, err := s.authenticateOIDCBearer(ctx, bearerToken); err == nil {
 			return principal, nil
 		} else if !errors.Is(err, ErrUnauthenticated) {

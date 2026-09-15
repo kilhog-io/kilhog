@@ -73,20 +73,28 @@ func buildRouter() (http.Handler, error) {
 		PublicURL:      envOrDefault("KILHOG_PUBLIC_URL", ""),
 		SessionTTL:     sessionTTLFromEnv(),
 	}
-	authService := service.NewAuthService(repos.Users, repos.IdentityPools, repos.Sessions, repos.OIDCStates, authCfg)
+	machineService := service.NewMachineIdentityService(
+		repos.MachinePools,
+		repos.MachineProviders,
+		repos.Machines,
+		repos.MachineAPIKeys,
+		nil,
+	)
+	authService := service.NewAuthService(repos.Users, repos.IdentityPools, repos.Sessions, repos.OIDCStates, machineService, authCfg)
 	userService := service.NewUserService(repos.Users)
 	poolService := service.NewIdentityPoolService(repos.IdentityPools)
 
 	slog.Info("kilhog worker ready", "db", cfg.Driver, "api_key", boolLabel(apiKey != ""))
 
 	return handler.NewRouter(handler.Dependencies{
-		Store:               repos.Store,
-		NetworkService:      service.NewNetworkService(repos.Networks, repos.Subnets),
-		SubnetService:       service.NewSubnetService(repos.Subnets, repos.Networks),
-		AuthService:         authService,
-		UserService:         userService,
-		IdentityPoolService: poolService,
-		APIKey:              apiKey,
+		Store:                  repos.Store,
+		NetworkService:         service.NewNetworkService(repos.Networks, repos.Subnets),
+		SubnetService:          service.NewSubnetService(repos.Subnets, repos.Networks),
+		AuthService:            authService,
+		UserService:            userService,
+		IdentityPoolService:    poolService,
+		MachineIdentityService: machineService,
+		APIKey:                 apiKey,
 	}), nil
 }
 

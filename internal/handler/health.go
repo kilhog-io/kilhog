@@ -10,14 +10,15 @@ import (
 )
 
 type Dependencies struct {
-	Store               *db.Store
-	NetworkService      *service.NetworkService
-	SubnetService       *service.SubnetService
-	AuthService         *service.AuthService
-	UserService         *service.UserService
-	IdentityPoolService *service.IdentityPoolService
-	APIKey              string
-	Metrics             *metrics.Provider
+	Store                  *db.Store
+	NetworkService         *service.NetworkService
+	SubnetService          *service.SubnetService
+	AuthService            *service.AuthService
+	UserService            *service.UserService
+	IdentityPoolService    *service.IdentityPoolService
+	MachineIdentityService *service.MachineIdentityService
+	APIKey                 string
+	Metrics                *metrics.Provider
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -40,6 +41,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	}
 	registerUserAdminRoutes(protected, deps.UserService)
 	registerIdentityPoolRoutes(protected, deps.IdentityPoolService)
+	registerMachineIdentityRoutes(protected, deps.MachineIdentityService)
 
 	mux.Handle("/", authMiddleware(deps.AuthService, deps.APIKey, protected))
 
