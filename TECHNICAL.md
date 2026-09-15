@@ -55,6 +55,10 @@ Technical modeling of `FUNCTIONAL.md`. See that file for business rules.
 | `LocalUser`    | `user.go`          | Local username/password account |
 | `IdentityPool` | `identity_pool.go` | OIDC identity pool configuration |
 | `Session`      | `session.go`       | Server-side session + OIDC login state |
+| `MachinePool`  | `machine.go`       | Group of machine identities |
+| `MachineIdentityProvider` | `machine.go` | JWT/JWKS trust config owned by a machine pool |
+| `Machine`      | `machine.go`       | Named workload identity |
+| `MachineAPIKey`| `machine.go`       | Per-machine API key metadata (+ plaintext only at creation) |
 
 ### `Network`
 
@@ -102,6 +106,7 @@ Interfaces defined on the service side (consumed by business logic):
 - `UserRepository` — local users
 - `IdentityPoolRepository` — OIDC identity pools
 - `SessionRepository` / `OIDCLoginStateRepository` — sessions and PKCE state
+- `MachinePoolRepository` / `MachineProviderRepository` / `MachineRepository` / `MachineAPIKeyRepository` — machine identities
 
 ## IPv4 utilities (`internal/iputil`)
 
@@ -118,7 +123,7 @@ Interfaces defined on the service side (consumed by business logic):
 ### Abstraction
 
 ```
-service (NetworkRepository, SubnetRepository, UserRepository, IdentityPoolRepository, SessionRepository, …)
+service (NetworkRepository, SubnetRepository, UserRepository, IdentityPoolRepository, SessionRepository, MachinePoolRepository, …)
     └── repository/
             ├── sqlite/    → SQLite implementations (native)
             ├── postgres/  → PostgreSQL implementations (native)
@@ -216,7 +221,9 @@ internal/repository/migration/migrations/sqlite/
 ├── 001_initial_schema.up.sql
 ├── 001_initial_schema.down.sql
 ├── 002_auth.up.sql
-└── 002_auth.down.sql
+├── 002_auth.down.sql
+├── 003_machine_identities.up.sql
+└── 003_machine_identities.down.sql
 ```
 
 #### Tracking table: `schema_migrations`
@@ -307,6 +314,10 @@ The `001_initial_schema.up.sql` script creates `schema_migrations`, `networks`, 
 
 Adds local users, OIDC identity pools, sessions, and OIDC login-state tables (see below).
 
+#### Machine identities script (`003_machine_identities`)
+
+Adds machine pools, JWT providers (JWKS), machines, and per-machine API keys.
+
 #### `local_users` table
 
 | Column          | Type          | Constraints | Maps to |
@@ -351,6 +362,56 @@ Adds local users, OIDC identity pools, sessions, and OIDC login-state tables (se
 
 Short-lived PKCE/`state`/`nonce` rows for Authorization Code + PKCE (TTL ~10 minutes). Consumed atomically on callback (`Take`).
 
+#### `machine_pools` table
+
+| Column | Constraints | Maps to |
+|--------|-------------|---------|
+| `uuid` | PK | `MachinePool.UUID` |
+| `name` | NOT NULL, UNIQUE | `MachinePool.Name` |
+| `slug` | NOT NULL, UNIQUE | `MachinePool.Slug` |
+| `description` | NULL | `MachinePool.Description` |
+| `enabled` | BOOL/INT NOT NULL | `MachinePool.Enabled` |
+| `created_at` / `updated_at` | NOT NULL | timestamps |
+
+#### `machine_identity_providers` table
+
+| Column | Constraints | Maps to |
+|--------|-------------|---------|
+| `uuid` | PK | `MachineIdentityProvider.UUID` |
+| `machine_pool_uuid` | FK → `machine_pools` ON DELETE CASCADE | Parent pool |
+| `name` | UNIQUE `(machine_pool_uuid, name)` | `Name` |
+| `issuer` | UNIQUE `(machine_pool_uuid, issuer)` | JWT `iss` |
+| `audiences` | JSON array, NOT NULL | Accepted JWT `aud` values |
+| `jwks_mode` | `discovery`, `uri`, or `static` | How keys are supplied |
+| `jwks_uri` | NULL | Required for `uri` |
+| `jwks` | NULL | Static JWKS JSON for `static` |
+| `enabled` | BOOL/INT NOT NULL | |
+
+#### `machines` table
+
+| Column | Constraints | Maps to |
+|--------|-------------|---------|
+| `uuid` | PK | `Machine.UUID` |
+| `machine_pool_uuid` | FK → pools ON DELETE CASCADE | Parent pool |
+| `name` | UNIQUE `(machine_pool_uuid, name)` | `Name` |
+| `provider_uuid` | FK → providers ON DELETE SET NULL | JWT provider, optional |
+| `subject` / `subject_prefix` | NULL | JWT `sub` matching |
+| `claims` | JSON array of `{claim, op, value}` | Extra claim conditions (`eq` / `in` / `prefix`) |
+| `enabled` | BOOL/INT NOT NULL | |
+
+#### `machine_api_keys` table
+
+| Column | Constraints | Maps to |
+|--------|-------------|---------|
+| `uuid` | PK | `MachineAPIKey.UUID` |
+| `machine_uuid` | FK → machines ON DELETE CASCADE | Parent machine |
+| `prefix` | UNIQUE | Public prefix `khog_mkey_…` |
+| `token_hash` | UNIQUE | SHA-256 of the full secret |
+| `name` | NULL | Label |
+| `expires_at` / `revoked_at` / `last_used_at` | NULL | Lifecycle |
+
+The plaintext secret is never stored. HTTP `DELETE` on a key sets `revoked_at`.
+
 ### Dialect differences
 
 | Aspect | SQLite | PostgreSQL | Cloudflare D1 |
@@ -380,6 +441,7 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 | `github.com/prometheus/client_golang` | Prometheus registry and `/metrics` HTTP handler |
 | `github.com/syumai/workers` | Cloudflare Workers HTTP + D1 (WASM builds) |
 | `github.com/coreos/go-oidc/v3` | OIDC ID token verification |
+| `github.com/go-jose/go-jose/v4` | Machine JWT signature verification and JWKS |
 | `golang.org/x/oauth2` | OIDC Authorization Code + PKCE |
 | `golang.org/x/crypto` | bcrypt password hashing |
 
@@ -400,6 +462,7 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 | GET/POST/PUT/DELETE | `/users…` | admin | Local user administration |
 | POST    | `/users/me/password`| local user    | Change own password |
 | GET/POST/PUT/DELETE | `/auth/identity-pools…` | admin | OIDC pool administration |
+| GET/POST/PUT/DELETE | `/auth/machine-pools…` | admin | Machine pools, JWT providers, machines, API keys |
 | GET     | `/networks`         | yes*          | List all networks |
 | POST    | `/networks`         | yes*          | Create a network |
 | GET     | `/networks/{uuid}`  | yes*          | Get a network by UUID |
@@ -413,21 +476,54 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 | GET     | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | yes* | List child subnets of a subnet |
 | POST    | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | yes* | Create a child subnet of a subnet |
 
-> \* Protected IPAM and admin routes require authentication. Auth is configured when at least one of: non-empty `KILHOG_API_KEY`, ≥1 local user, or ≥1 enabled OIDC pool. Otherwise protected routes return `403`. Invalid credentials return `401`. `GET /healthz`, `GET /metrics`, and public auth discovery/login routes stay reachable without a session.
+> \* Protected IPAM and admin routes require authentication. Auth is configured when at least one of: non-empty `KILHOG_API_KEY`, ≥1 local user, ≥1 enabled OIDC pool, or ≥1 enabled machine pool. Otherwise protected routes return `403`. Invalid credentials return `401`. `GET /healthz`, `GET /metrics`, and public auth discovery/login routes stay reachable without a session.
 
 > **Tenancy**: all subnet operations go through `/networks/{uuid}/…`. The network `uuid` in the URL is the isolation boundary; the server verifies that each subnet belongs to that network (directly or via the parent hierarchy).
 
 ### Authentication
 
-Three methods are accepted (OR semantics). See `FUNCTIONAL.md` for business rules.
+Four methods are implemented (OR semantics). See `FUNCTIONAL.md` for business rules.
 
 | Method | How presented | Notes |
 |--------|---------------|-------|
-| API key | `Authorization: Bearer <key>` or `X-API-Key` | Shared secret from `KILHOG_API_KEY`; IPAM access only (not user/pool admin) |
+| API key (deployment-wide) | `Authorization: Bearer <key>` or `X-API-Key` | Shared secret from `KILHOG_API_KEY`; IPAM access only. Get-started path. |
 | Local session | `Authorization: Bearer <session_token>` or cookie `kilhog_session` | Issued by `/auth/bootstrap` or `/auth/login` |
-| OIDC | Session after code flow, or Bearer JWT validated against an enabled pool | Admin of users/pools requires a local `admin` account |
+| OIDC | Session after code flow, or Bearer JWT validated against an enabled human pool | Admin of users/pools/machines requires a local `admin` account |
+| Machine identity | Per-machine API key (`khog_mkey_…`) via Bearer or `X-API-Key`, or Bearer JWT | Named principal; IPAM only; no kilhog session |
+
+Bearer handling order: deployment-wide API key, machine API key (non-JWT), session token, machine JWT (JWKS), then human OIDC JWT.
 
 `GET /healthz` and `GET /metrics` stay public (health probes and Prometheus scrapes).
+
+#### Machine identities
+
+Admin-only routes (local `admin`):
+
+| Method | Route |
+|--------|-------|
+| GET/POST | `/auth/machine-pools` |
+| GET/PUT/DELETE | `/auth/machine-pools/{uuid}` |
+| GET/POST | `/auth/machine-pools/{uuid}/providers` |
+| GET/PUT/DELETE | `/auth/machine-pools/{uuid}/providers/{provider_uuid}` |
+| POST | `/auth/machine-pools/{uuid}/providers/{provider_uuid}/refresh` |
+| GET/POST | `/auth/machine-pools/{uuid}/machines` |
+| GET/PUT/DELETE | `/auth/machine-pools/{uuid}/machines/{machine_uuid}` |
+| GET/POST | `/auth/machine-pools/{uuid}/machines/{machine_uuid}/api-keys` |
+| DELETE | `/auth/machine-pools/{uuid}/machines/{machine_uuid}/api-keys/{key_uuid}` |
+
+Provider `jwks_mode`:
+
+| Mode | Config | Key refresh |
+|------|--------|-------------|
+| `discovery` | `issuer` (HTTPS) | `{issuer}/.well-known/openid-configuration` → `jwks_uri`; cache ~1h, refetch on unknown `kid` |
+| `uri` | `issuer` + `jwks_uri` (HTTPS) | Fetch `jwks_uri`; same cache policy |
+| `static` | `jwks` (RFC 7517) | Manual update only; `POST …/refresh` returns 400 |
+
+Machine API keys: format `khog_mkey_<prefix>.<secret>`, SHA-256 stored, plaintext returned **once** on `POST`. `DELETE` revokes (`revoked_at`). JWT matching uses `subject`, `subject_prefix`, and claims (`eq` / `in` / `prefix`); exactly one enabled machine must match.
+
+`GET /auth/status` includes `enabled_machine_pools`. `/auth/me` for a machine returns `kind=machine`, pool/machine ids, `auth_method` (`api_key` or `jwt`), and JWT `issuer`/`subject` when applicable.
+
+Implementation: `internal/service/machine.go`, `internal/service/machine_auth.go`, `internal/handler/machine.go`. JWT verification uses `github.com/go-jose/go-jose/v4`.
 
 #### Bootstrap (primo-admin)
 

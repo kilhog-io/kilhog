@@ -19,19 +19,28 @@ func newAuthedTestRouter(deps Dependencies) http.Handler {
 }
 
 func authDepsFromRepos(repos *repository.Repositories, apiKey string) Dependencies {
+	machines := service.NewMachineIdentityService(
+		repos.MachinePools,
+		repos.MachineProviders,
+		repos.Machines,
+		repos.MachineAPIKeys,
+		nil,
+	)
 	auth := service.NewAuthService(
 		repos.Users,
 		repos.IdentityPools,
 		repos.Sessions,
 		repos.OIDCStates,
+		machines,
 		service.AuthConfig{APIKey: apiKey},
 	)
 	return Dependencies{
-		Store:               repos.Store,
-		AuthService:         auth,
-		UserService:         service.NewUserService(repos.Users),
-		IdentityPoolService: service.NewIdentityPoolService(repos.IdentityPools),
-		APIKey:              apiKey,
+		Store:                  repos.Store,
+		AuthService:            auth,
+		UserService:            service.NewUserService(repos.Users),
+		IdentityPoolService:    service.NewIdentityPoolService(repos.IdentityPools),
+		MachineIdentityService: machines,
+		APIKey:                 apiKey,
 	}
 }
 

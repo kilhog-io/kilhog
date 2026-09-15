@@ -11,13 +11,17 @@ import (
 )
 
 type Repositories struct {
-	Store         *db.Store
-	Networks      service.NetworkRepository
-	Subnets       service.SubnetRepository
-	Users         service.UserRepository
-	IdentityPools service.IdentityPoolRepository
-	Sessions      service.SessionRepository
-	OIDCStates    service.OIDCLoginStateRepository
+	Store            *db.Store
+	Networks         service.NetworkRepository
+	Subnets          service.SubnetRepository
+	Users            service.UserRepository
+	IdentityPools    service.IdentityPoolRepository
+	Sessions         service.SessionRepository
+	OIDCStates       service.OIDCLoginStateRepository
+	MachinePools     service.MachinePoolRepository
+	MachineProviders service.MachineProviderRepository
+	Machines         service.MachineRepository
+	MachineAPIKeys   service.MachineAPIKeyRepository
 }
 
 func Open(ctx context.Context, cfg db.Config) (*Repositories, error) {
@@ -36,13 +40,17 @@ func Open(ctx context.Context, cfg db.Config) (*Repositories, error) {
 	}
 
 	return &Repositories{
-		Store:         store,
-		Networks:      NewNetworkRepository(store),
-		Subnets:       NewSubnetRepository(store),
-		Users:         NewUserRepository(store),
-		IdentityPools: NewIdentityPoolRepository(store),
-		Sessions:      NewSessionRepository(store),
-		OIDCStates:    NewOIDCLoginStateRepository(store),
+		Store:            store,
+		Networks:         NewNetworkRepository(store),
+		Subnets:          NewSubnetRepository(store),
+		Users:            NewUserRepository(store),
+		IdentityPools:    NewIdentityPoolRepository(store),
+		Sessions:         NewSessionRepository(store),
+		OIDCStates:       NewOIDCLoginStateRepository(store),
+		MachinePools:     NewMachinePoolRepository(store),
+		MachineProviders: NewMachineProviderRepository(store),
+		Machines:         NewMachineRepository(store),
+		MachineAPIKeys:   NewMachineAPIKeyRepository(store),
 	}, nil
 }
 
