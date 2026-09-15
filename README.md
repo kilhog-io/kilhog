@@ -14,16 +14,16 @@ Its name comes from an English–French–Breton word chain: *pool* → *poule* 
 - Hierarchical IPv4 **subnet** management (CIDR blocks and host addresses)
 - CIDR validation: parent containment, overlap detection, automatic address allocation
 - **SQLite**, **PostgreSQL**, or **Cloudflare D1** persistence with versioned migrations
-- JSON REST API with API key, local users (bootstrap admin), and multi-pool OIDC authentication
+- JSON REST API with API key, local users (bootstrap admin), multi-pool OIDC, and machine identities
+- **RBAC**: owners, per-network and per-subnet CRUD grants, `create_networks`, OIDC groups and machine pools (`FUNCTIONAL.md`)
 - **pogig** CLI and **Go SDK** (`pkg/kilhog`) for programmatic access and Terraform integration
 - Cloudflare Workers WASM deployment (`make build-wasm`)
-- Ready for multi-tenancy and RBAC
 
 ## Documentation
 
 | File | Content |
 |------|---------|
-| [FUNCTIONAL.md](FUNCTIONAL.md) | Business rules: entities, uniqueness constraints, subnet hierarchy |
+| [FUNCTIONAL.md](FUNCTIONAL.md) | Business rules: entities, identities, authentication, RBAC |
 | [TECHNICAL.md](TECHNICAL.md) | Architecture, stack, database schema, API routes and examples |
 
 ## Quick start
