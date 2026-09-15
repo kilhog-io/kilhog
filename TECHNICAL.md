@@ -1407,3 +1407,26 @@ make dev-delete-subnet-apps
 make dev-update-network-hors-prod
 make dev-delete-network-prod
 ```
+
+## Cloud Agent environment (`.cursor/environment.json`)
+
+`.cursor/environment.json` defines the Cursor Cloud Agent development environment. It is repository-managed (versioned with the code), so it follows branches and pull requests and takes precedence over any dashboard-managed configuration.
+
+| Field | Value | Purpose |
+|-------|-------|---------|
+| `user` | `ubuntu` | Runtime user in the base image |
+| `install` | `go mod download && make build-all` | Idempotent dependency refresh and build of `bin/kilhog` + `bin/pogig` after checkout |
+| `terminals[0]` | `make run-dev` (`kilhog-server`) | Long-running API server (SQLite, API key `dev-secret`) on `http://localhost:8080` |
+| `ports[0]` | `8080` (`api`) | Exposes the REST API port |
+
+The base image already provides the required toolchain (Go per `go.mod`, Node.js, npm, GNU Make), so no custom Dockerfile is needed for Cloud Agents. The `install` command is idempotent: repeated runs only re-download cached modules and rebuild the binaries. Docker is not required for the standard SQLite development flow.
+
+Verify the environment:
+
+```bash
+curl http://localhost:8080/healthz
+KILHOG_API_KEY=dev-secret ./bin/pogig health
+make dev-create-networks
+make dev-create-subnets
+KILHOG_API_KEY=dev-secret ./bin/pogig network list
+```
