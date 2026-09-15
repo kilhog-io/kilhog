@@ -419,13 +419,15 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 
 ### Authentication
 
-Three methods are accepted (OR semantics). See `FUNCTIONAL.md` for business rules.
+Three methods are implemented (OR semantics). See `FUNCTIONAL.md` for business rules.
 
 | Method | How presented | Notes |
 |--------|---------------|-------|
-| API key | `Authorization: Bearer <key>` or `X-API-Key` | Shared secret from `KILHOG_API_KEY`; IPAM access only (not user/pool admin) |
+| API key | `Authorization: Bearer <key>` or `X-API-Key` | Shared secret from `KILHOG_API_KEY`; IPAM access only (not user/pool admin). Kept as the get-started path. |
 | Local session | `Authorization: Bearer <session_token>` or cookie `kilhog_session` | Issued by `/auth/bootstrap` or `/auth/login` |
 | OIDC | Session after code flow, or Bearer JWT validated against an enabled pool | Admin of users/pools requires a local `admin` account |
+
+**Machine identities** (machine pools, JWT providers with JWKS modes `discovery` / `uri` / `static`, named machines, per-machine API keys) are specified in `FUNCTIONAL.md` and are **not implemented yet**. Until they are, named CI/automation uses the deployment-wide API key, a local session, or a human OIDC bearer token. Implementation will add routes and schema here.
 
 `GET /healthz` and `GET /metrics` stay public (health probes and Prometheus scrapes).
 
