@@ -251,7 +251,7 @@ At **setup**, only a local `admin` (and optionally the deployment-wide API key) 
 
 | Principal | IPAM (networks / subnets) | Create networks | Manage grants on owned resources | Manage local users | Manage OIDC pools | Manage machine identities |
 |-----------|---------------------------|-----------------|----------------------------------|--------------------|-------------------|---------------------------|
-| Local `admin` | Full CRUD (bypass) | yes (implicit) | yes (all resources) | yes | yes | yes |
+| Local `admin` | Full CRUD **and implicit owner** (bypass) | yes (implicit) | yes (all resources, bypass) | yes | yes | yes |
 | Local `user` | Only through grants | Only with platform grant | If owner | no | no | no |
 | OIDC principal | Only through grants | Only with platform grant | If owner | no | no | no |
 | Machine identity | Only through grants | Only with platform grant | If owner | no | no | no |
@@ -558,7 +558,7 @@ When authentication features are available, kilhog exposes capabilities such as:
 - Read the current principal and that principal’s own grants (including grants inherited from groups / machine pools)
 - Admin CRUD for local users, OIDC identity pools, machine pools, providers, machines, and machine API keys
 - Admin assignment of platform `create_networks` grants
-- Grant CRUD on a network or subnet by its **owners** (and by `admin`)
+- Grant CRUD and ownership share/transfer on a network or subnet by its **owners** (and by `admin`, who bypasses ownership)
 
 Exact paths and payloads are defined in `TECHNICAL.md`.
 
@@ -582,8 +582,10 @@ Exact paths and payloads are defined in `TECHNICAL.md`.
 | Bootstrap when a local user already exists | Rejected |
 | Authenticated caller without the required permission, resource not visible | `404` Not Found |
 | Authenticated caller who can see the resource but lacks the required permission | `403` Forbidden |
-| Non-owner attempts grant administration on a resource they do not own | `403` Forbidden |
+| Non-owner attempts grant administration on a resource they do not own (and is not `admin`) | `403` Forbidden |
 | Principal without `create_networks` (and not admin / deployment API key) calls `POST /networks` | `403` Forbidden |
+| Ownership transfer with invalid `from` / `to`, or that would leave a network with no owner (non-admin) | `400` / `409` |
+| Disabled or deleted identity used as a grant subject at evaluation time | Grant is ignored (no rights) |
 
 ## Authorization (RBAC)
 
@@ -594,16 +596,17 @@ Authentication answers **who** is calling. Authorization answers **what** that c
 1. **Setup.** The primo-admin configures local users, OIDC identity pools, and machine identities. Only `admin` (and optionally the deployment-wide API key) can create IPAM resources at this stage.
 2. **Delegate network creation.** The admin grants the platform capability `create_networks` to users and/or groups (OIDC groups, machine pools, or individual machines).
 3. **Ownership.** When such a principal creates a network, kilhog records them as **owner** of that network. Ownership includes full CRUD on the network and every subnet in it, so the owner can create subnets immediately.
-4. **Delegate inside the tenancy.** Owners grant CRUD (and optionally ownership) on the network or on specific subnets to other users, groups, and machines.
+4. **Delegate inside the tenancy.** Owners **share** ownership (`owner = true` to another identity or group) or **transfer** it, and grant CRUD on the network or on specific subnets.
+5. **Break-glass.** A local `admin` bypasses ownership at any time: they may operate on every network and subnet and manage every grant, without being listed as owner. That power exists to recover tenancy when owners are revoked; it is not a substitute for assigning owners in normal operation.
 
 Default is **deny**: a local `user`, OIDC principal, or machine with no applicable grant cannot list, read, create, update, or delete any network or subnet, and cannot create networks.
 
 Privileged exceptions:
 
-| Principal | IPAM bypass | Create networks | Grant administration |
-|-----------|-------------|-----------------|----------------------|
-| Local `admin` | yes | yes | All resources |
-| Deployment-wide API key | yes | yes | no |
+| Principal | IPAM bypass | Create networks | Ownership / grant administration |
+|-----------|-------------|-----------------|----------------------------------|
+| Local `admin` | yes — implicit owner of every network and subnet | yes | yes, without an owner grant |
+| Deployment-wide API key | yes (IPAM only) | yes | no |
 
 Health probes (`GET /healthz`) and metrics (`GET /metrics`) stay public and are not subject to RBAC.
 
@@ -639,11 +642,11 @@ A grant targets exactly one of:
 
 | Kind | Identified by | Who matches |
 |------|---------------|-------------|
-| Local user | `local_user` UUID | That user, if enabled |
-| OIDC principal | identity pool UUID + `subject` | That federated user |
-| OIDC group | identity pool UUID + group name | Any OIDC principal of that pool whose token/session `groups` contain this name |
-| Machine | machine UUID | That machine, if the machine and its pool are enabled |
-| Machine pool | machine pool UUID | Every enabled machine in that pool |
+| Local user | `local_user` UUID | That user, if **enabled**. Disabled or deleted → no rights ([revocation](#identity-revocation)). |
+| OIDC principal | identity pool UUID + `subject` | That federated user, if the pool is enabled |
+| OIDC group | identity pool UUID + group name | Any OIDC principal of that pool whose token/session `groups` contain this name **now** |
+| Machine | machine UUID | That machine, if the machine **and** its pool are enabled |
+| Machine pool | machine pool UUID | Every **enabled** machine in that **enabled** pool |
 
 The deployment-wide API key is **not** a grant subject. It always bypasses grants.
 
@@ -671,26 +674,52 @@ Only a local `admin` may create, list all, update, or delete **platform** grants
 
 When a non-privileged principal (local `user`, OIDC, or machine) successfully creates a network, kilhog **creates an owner grant** on that network for the creating principal (the user or machine, not the group or pool that conferred `create_networks`).
 
-The deployment-wide API key and local `admin` do not receive an owner row: they already bypass RBAC.
+The deployment-wide API key and local `admin` do not receive an owner row: they already bypass RBAC. The admin can still **assign** or **transfer** ownership to named principals so day-to-day operators do not depend on break-glass.
 
 ### Ownership
 
-An **owner** of a resource has:
+A local **`admin` is an implicit owner of every network and subnet**. Ownership checks do not apply to them: they may read, mutate, delete, list grants, share ownership, transfer ownership, and recover a tenancy that has no remaining effective owner. They should use that power to restore a named owner, not to run ordinary IPAM as a substitute for grants.
+
+A named **owner** of a resource (a grant with `owner = true`) has:
 
 - full CRUD on that resource (and, by inheritance, on descendants);
-- the right to **list, create, update, and delete grants** on that resource and on its descendants.
+- the right to **list, create, update, and delete grants** on that resource and on its descendants;
+- the right to **share** and **transfer** ownership on that resource (and descendants, for a network owner).
 
-| Owns | May manage grants on |
-|------|----------------------|
+| Owns | May manage grants and ownership on |
+|------|-------------------------------------|
 | A network | That network and every subnet in it |
 | A subnet | That subnet and its nested descendants (not the parent network, not siblings) |
 
 Ownership is recorded as `owner = true` on a grant. It is inherited **down** the tree the same way CRUD is: a network owner is treated as owner of every subnet in that network for grant-management purposes.
 
-Owners may:
+#### Share ownership
 
-- grant any combination of CRUD on resources they own, to any valid grant subject (user, OIDC principal, OIDC group, machine, machine pool);
-- grant `owner = true` (share ownership) on resources they own;
+An owner (or `admin`) may grant `owner = true` to **another identity or group** on a resource they own. Existing owners are unchanged. Several owners may coexist (a user, an OIDC group, and a machine pool at once).
+
+Sharing is a normal grant create/update with `owner = true`.
+
+#### Transfer ownership
+
+**Transfer** moves ownership from one subject to another in a **single atomic operation**:
+
+1. The destination receives `owner = true` (create or update that grant).
+2. The source loses `owner` (the source grant is deleted if it would have no remaining flags; otherwise `owner` is set to `false`).
+
+Rules:
+
+- Caller must be a local `admin` or an owner of the resource.
+- `to` may be any valid grant subject (local user, OIDC principal, OIDC group, machine, machine pool), except a local `admin`.
+- `from` defaults to the caller’s own owner grant. An `admin` (or an owner transferring a **group** / **machine pool** owner grant they control) may set `from` explicitly.
+- The destination must exist and be enabled (a disabled identity cannot receive ownership).
+- A non-admin transfer must not leave the resource with **zero remaining owner grants**. Because the destination is written first in the same transaction, transferring the last owner grant to a new subject is allowed.
+- Transfer does not copy non-owner CRUD flags from the source to the destination.
+
+After a transfer, the previous owner has no ownership (and no implied CRUD from that owner grant). They keep other grants they still hold (for example a separate `read` grant, or rights via a group).
+
+Owners may also:
+
+- grant any combination of CRUD on resources they own, to any valid grant subject;
 - revoke grants they can see on those resources.
 
 Owners may **not**:
@@ -700,7 +729,27 @@ Owners may **not**:
 - grant rights on a resource they do not own;
 - grant more scope than they own (a subnet owner cannot attach a grant to the parent network).
 
-A non-admin caller cannot delete or set `owner = false` on the **last remaining owner grant** of a network (so a tenancy cannot lose every owner). An `admin` can always repair ownership.
+A non-admin caller cannot delete or set `owner = false` on the **last remaining owner grant** of a network (so a tenancy cannot lose every owner **through grant edits**). An `admin` can always repair or reassign ownership, including after every named owner has been revoked.
+
+### Identity revocation
+
+When an identity is **revoked**, its rights **disappear immediately** from authorization: they cannot authenticate, and any stored grants targeting them (or a group/pool they no longer match) are ignored.
+
+| Event | Authentication | Effective grants |
+|-------|----------------|------------------|
+| Local user **disabled** | Rejected (`401`) | Grants targeting that user are **inert** until the user is enabled again |
+| Local user **deleted** | Impossible | Grant rows targeting that user are **deleted** |
+| Machine or machine pool **disabled** | Rejected (`401`) | Grants targeting that machine / pool are **inert** until enabled again |
+| Machine **deleted** | Impossible | Grant rows targeting that machine are **deleted** |
+| Machine pool **deleted** | Impossible | Grant rows targeting that pool and its machines are **deleted** |
+| Machine API key **revoked** or expired | That credential is rejected (`401`) | Grants on the **machine** remain; other keys or JWT for the same machine still use them |
+| OIDC identity pool **disabled** or **deleted** | New logins/tokens through that pool fail | Direct and group grants for that pool are inert (disable) or **deleted** (delete) |
+| Principal **leaves an OIDC group** | Unchanged | The OIDC **group** grant no longer applies to them |
+| Machine **leaves** a pool (deleted from the pool) | Follows machine delete | Machine grants deleted |
+
+Inert grants are not applied in `Can` / `IsOwner` / list filtering. Re-enabling a disabled user, machine, or pool restores those grants without recreating them.
+
+If revocation removes the last **effective** owner of a network (disabled last owner, deleted last owner, empty OIDC group, disabled machine pool), the network is not deleted. A local `admin` bypasses ownership and must assign or transfer ownership to a living principal.
 
 ### CRUD meaning
 
@@ -781,9 +830,11 @@ Business conflicts (name clash, CIDR overlap, delete with children) still return
 | Operation | Who |
 |-----------|-----|
 | Platform `create_networks` grants | Local `admin` only |
-| Create / update / delete grants on a network or subnet | Local `admin`, or an **owner** of that resource (or of an ancestor that confers ownership) |
+| Create / update / delete grants on a network or subnet | Local `admin` (bypass), or an **owner** of that resource (or of an ancestor that confers ownership) |
+| Share ownership (`owner = true` on another subject) | Same |
+| Transfer ownership | Same |
 | List grants on a network or subnet | Same as create/update/delete |
-| List **own** grants | The authenticated principal (including grants inherited from OIDC groups or a machine pool) |
+| List **own** grants | The authenticated principal (including grants inherited from OIDC groups or a machine pool; excluding inert grants) |
 
 Grant updates replace the flags (including `owner`). Deleting a grant immediately removes those rights; in-flight requests already authorized are not retroactively cancelled.
 
@@ -793,10 +844,13 @@ Grant updates replace the flags (including `owner`). Deleting a grant immediatel
 |-------|------------------|
 | Network deleted | All grants on that network **and** on every subnet in that network are deleted |
 | Subnet deleted | Grants on that subnet are deleted |
-| Local user deleted | Grants targeting that user are deleted |
-| Identity pool deleted | OIDC principal and OIDC group grants for that pool are deleted |
-| Machine deleted | Grants targeting that machine are deleted |
-| Machine pool deleted | Grants targeting that pool **and** grants targeting its machines are deleted (machines cascade) |
+| Local user **deleted** | Grants targeting that user are deleted |
+| Local user **disabled** | Grant rows kept; they are **inert** (see [Identity revocation](#identity-revocation)) |
+| Identity pool **deleted** | OIDC principal and OIDC group grants for that pool are deleted |
+| Identity pool **disabled** | Those grants are inert |
+| Machine **deleted** | Grants targeting that machine are deleted |
+| Machine or pool **disabled** | Grants targeting that machine / pool are inert |
+| Machine pool **deleted** | Grants targeting that pool **and** grants targeting its machines are deleted (machines cascade) |
 
 ### Out of scope (this version)
 
@@ -820,4 +874,4 @@ Authentication establishes **who** is calling. The **network** remains the tenan
 
 Authorization binds principals (users, OIDC groups, machines, machine pools) to **networks** and optionally to **subnets**. Creating a network is a platform right; owning that network is how tenancy is delegated after setup.
 
-Local `admin` remains global so a deployment can always recover tenancy and identity configuration. Named automation uses **machine identities** under the same grant model as humans. The deployment-wide API key remains a get-started bypass, not a named owner.
+Local `admin` remains an implicit owner of every tenancy so the deployment can always recover networks after owners are revoked. Named automation uses **machine identities** under the same grant model as humans. The deployment-wide API key remains a get-started IPAM bypass, not a named owner.

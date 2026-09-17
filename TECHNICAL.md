@@ -550,7 +550,9 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 | GET/POST/PUT/DELETE | `/auth/machine-pools…` | admin | Machine pools, JWT providers, machines, API keys |
 | GET/POST/PUT/DELETE | `/auth/platform-grants…` | admin | Platform `create_networks` grants |
 | GET/POST/PUT/DELETE | `/networks/{uuid}/grants…` | admin or owner | Grants on a network |
+| POST    | `/networks/{uuid}/ownership/transfer` | admin or owner | Transfer network ownership |
 | GET/POST/PUT/DELETE | `/networks/{uuid}/subnets/{subnet_uuid}/grants…` | admin or owner | Grants on a subnet |
+| POST    | `/networks/{uuid}/subnets/{subnet_uuid}/ownership/transfer` | admin or owner | Transfer subnet ownership |
 | GET     | `/networks`         | yes*          | List networks the caller may read |
 | POST    | `/networks`         | yes*          | Create a network |
 | GET     | `/networks/{uuid}`  | yes*          | Get a network by UUID |
@@ -1073,7 +1075,7 @@ Implements `FUNCTIONAL.md` § Authorization. Handlers stay HTTP-facing; evaluati
 ```
 handler (auth middleware → principal on context)
     ├── requireAdmin for /users, /auth/identity-pools, /auth/machine-pools, /auth/platform-grants
-    ├── grant routes: requireAdmin OR owner of the resource
+    ├── grant routes: requireAdmin OR owner of the resource (admin bypasses ownership)
     └── IPAM handlers call AuthorizationService, then NetworkService / SubnetService
             └── GrantRepository
 ```
@@ -1087,7 +1089,7 @@ handler (auth middleware → principal on context)
 | `IsPrivileged(principal)` | Local `admin` or deployment-wide API key |
 | `CanCreateNetworks(ctx, principal)` | Privileged, or effective platform `create_networks` |
 | `Can(ctx, principal, action, resourceKind, resourceUUID)` | Effective permission after inheritance and group/pool expansion |
-| `IsOwner(ctx, principal, resourceKind, resourceUUID)` | Owner grant on the resource or an ancestor (network owner owns all subnets in it) |
+| `IsOwner(ctx, principal, resourceKind, resourceUUID)` | `true` for local `admin` (implicit owner); otherwise an owner grant on the resource or an ancestor |
 | `Require` / `RequireOwner` | Typed errors for 404 vs 403 |
 | `VisibleNetworkUUIDs` / `FilterReadableSubnets` | List filtering |
 | `EffectivePermissions` | Union of flags including `owner` |
@@ -1096,9 +1098,9 @@ handler (auth middleware → principal on context)
 
 #### Evaluation algorithm
 
-1. Privileged (admin / deployment API key) → allow IPAM actions. Grant admin routes: admin always; `manage_grants` also if `IsOwner`.
-2. Expand the principal to a set of grant subjects: self, plus OIDC groups from the session/JWT, plus the machine’s pool when `kind = machine`.
-3. Load grants for those subjects on the target, ancestor subnets, and root network (and platform row for `create_networks`).
+1. Local `admin` → allow all IPAM actions **and** treat as owner of every network/subnet (`IsOwner` is always true). Deployment-wide API key → allow IPAM actions only (not grant/ownership routes).
+2. Expand the principal to a set of grant subjects: self, plus OIDC groups from the session/JWT, plus the machine’s pool when `kind = machine`. **Drop subjects that are disabled or deleted** (inert grants).
+3. Load grants for remaining subjects on the target, ancestor subnets, and root network (and platform row for `create_networks`).
 4. Union flags. `owner` implies all CRUD.
 5. Structural visibility: `read` on ancestors of any granted subnet.
 
@@ -1112,7 +1114,8 @@ handler (auth middleware → principal on context)
 | `POST /networks/{uuid}/subnets` | `create` on the network |
 | Subnet GET/PUT/DELETE | `read` / `update` / `delete` on that subnet |
 | `POST …/subnets/{id}/subnets` | `create` on the parent subnet |
-| Grant admin on a network/subnet | `RequireOwner` or local `admin` |
+| Grant admin on a network/subnet | `RequireOwner` (local `admin` always passes) |
+| `POST …/ownership/transfer` | `RequireOwner`; then `GrantService.Transfer` |
 | `/auth/platform-grants` | Local `admin` only |
 
 `404` when the resource is not visible; `403` when it is visible but the flag is missing. Cross-tenant subnet URLs stay `404`.
@@ -1126,14 +1129,15 @@ handler (auth middleware → principal on context)
 - Replace-all flags on update
 - Refuse last-owner removal unless the caller is `admin`
 - `EnsureOwner` after network create
+- `Transfer(ctx, caller, resource, from, to)` — single write transaction: upsert destination `owner = true`, then drop `owner` on the source (delete the source row if no flags remain). `from` defaults to the caller. Reject disabled `to`. Non-admin cannot finish with zero owner rows.
 
-`GrantRepository`: `Create`, `Get`, `Update`, `Delete`, `ListByResource`, `ListByPrincipal`, `ListEffectiveForPrincipal` (self + groups + pool), `ListPlatform`, `ListByNetwork`.
+`GrantRepository`: `Create`, `Get`, `Update`, `Delete`, `ListByResource`, `ListByPrincipal`, `ListEffectiveForPrincipal` (self + groups + pool, **excluding disabled subjects**), `ListPlatform`, `ListByNetwork`, `CountOwners`.
 
 ### Grant routes
 
 #### `GET /auth/me/grants`
 
-Authenticated. Returns grants that apply to the caller (direct + OIDC groups + machine pool). Deployment-wide API key → `data: []`.
+Authenticated. Returns grants that apply to the caller (direct + OIDC groups + machine pool). Inert grants (disabled subjects) are omitted. Deployment-wide API key → `data: []`.
 
 #### Platform grants (admin)
 
@@ -1184,15 +1188,41 @@ Other principal kinds: `local_user` + `local_user_uuid`; `oidc` + pool + `subjec
 }
 ```
 
-`PUT` body: `{ "permissions": { … }, "owner": false }`. Principal and resource are immutable.
+`PUT` body: `{ "permissions": { … }, "owner": false }`. Principal and resource are immutable. Setting `owner: true` **shares** ownership (existing owners stay).
 
 Errors: `400` invalid subject/flags; `403` not admin and not owner; `404` resource or grant not visible/not found; `409` duplicate grant or last-owner conflict.
 
+#### Transfer ownership
+
+`POST /networks/{uuid}/ownership/transfer`
+
+`POST /networks/{uuid}/subnets/{subnet_uuid}/ownership/transfer`
+
+Request body:
+
+```json
+{
+  "from": {
+    "kind": "local_user",
+    "local_user_uuid": "11111111-1111-1111-1111-111111111111"
+  },
+  "to": {
+    "kind": "oidc_group",
+    "identity_pool_uuid": "22222222-2222-2222-2222-222222222222",
+    "group": "netops"
+  }
+}
+```
+
+`from` is optional: omit it to transfer the caller’s own owner grant. A local `admin` may transfer any owner grant. `200 OK` returns the destination grant in `data`.
+
+Errors: `400` missing `to`, invalid principals; `403` not admin and not owner; `404` resource or source owner grant not found; `409` destination disabled, or transfer would leave zero owners (non-admin).
+
 ### Tests
 
-Table-driven `AuthorizationService` tests: admin and deployment-key bypass; default deny for users/OIDC/machines; `create_networks` via user, OIDC group, and machine pool; auto-owner on network create; network owner inherits subnet CRUD and grant management; subnet owner cannot manage the parent network; group/pool expansion; last-owner protection; structural read-up; sibling isolation.
+Table-driven `AuthorizationService` tests: admin implicit owner (bypass) on networks and subnets; deployment-key IPAM bypass without grant routes; default deny for users/OIDC/machines; `create_networks` via user, OIDC group, and machine pool; auto-owner on network create; share ownership (`owner = true`); atomic transfer (source loses owner, destination gains it); last-owner protection on grant delete vs allowed transfer; disabled/deleted subjects make grants inert; group membership loss drops group grants; network owner inherits subnet CRUD and grant management; subnet owner cannot manage the parent network; structural read-up; sibling isolation.
 
-Handler tests: owner can POST grants, non-owner `403`, platform grants admin-only, list filtering.
+Handler tests: owner can POST grants and transfer; non-owner `403`; admin can transfer after all owners revoked; platform grants admin-only; list filtering.
 
 ### Breaking change
 
@@ -1481,6 +1511,7 @@ client, err := kilhog.NewClientFromEnv()
 | `ListMyGrants` | `GET /auth/me/grants` |
 | `ListPlatformGrants`, `CreatePlatformGrant`, `UpdatePlatformGrant`, `DeletePlatformGrant` | `/auth/platform-grants` … |
 | `ListNetworkGrants`, `CreateNetworkGrant`, `UpdateNetworkGrant`, `DeleteNetworkGrant` | `/networks/{uuid}/grants` … |
+| `TransferNetworkOwnership`, `TransferSubnetOwnership` | `POST …/ownership/transfer` |
 | `ListSubnetGrants`, `CreateSubnetGrant`, `UpdateSubnetGrant`, `DeleteSubnetGrant` | `/networks/{uuid}/subnets/{subnet_uuid}/grants` … |
 
 Errors from the API are returned as `*kilhog.APIError` with the HTTP status code and server message. A **403** whose body is not the kilhog error envelope (HTML or empty, typical of Cloud Armor `deny-403`) includes a hint to enable JSON parsing on the security policy; see [Load balancer and Cloud Armor](#load-balancer-and-cloud-armor).
@@ -1533,7 +1564,8 @@ Same variables and flags as the SDK:
 | `pogig grant me` | List grants for the current principal |
 | `pogig grant platform list\|create\|update\|delete` | Platform `create_networks` grants (admin) |
 | `pogig grant list --network <uuid> [--subnet <uuid>]` | List grants on a network or subnet (admin or owner) |
-| `pogig grant create --network <uuid> [--subnet <uuid>] --principal-kind … [--owner] --read/--create/--update/--delete` | Create a resource grant |
+| `pogig grant create --network <uuid> [--subnet <uuid>] --principal-kind … [--owner] --read/--create/--update/--delete` | Create a resource grant (use `--owner` to **share** ownership) |
+| `pogig grant transfer --network <uuid> [--subnet <uuid>] --to-kind … [--from-kind …]` | Transfer ownership |
 | `pogig grant update <grant-uuid> …` | Replace grant flags |
 | `pogig grant delete <grant-uuid> --network <uuid> [--subnet <uuid>]` | Delete a grant |
 
