@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -25,12 +26,20 @@ var _ service.SessionRepository = (*SessionRepository)(nil)
 
 func (r *SessionRepository) Create(ctx context.Context, session *model.Session) error {
 	return r.store.WithWriteTx(ctx, func(q db.Querier) error {
+		groupsJSON, err := json.Marshal(session.OIDCGroups)
+		if err != nil {
+			return fmt.Errorf("marshal oidc groups: %w", err)
+		}
+		if session.OIDCGroups == nil {
+			groupsJSON = []byte("[]")
+		}
+
 		query := fmt.Sprintf(`
 			INSERT INTO sessions (
 				uuid, token_hash, principal_kind, local_user_uuid, identity_pool_uuid,
-				oidc_subject, oidc_email, oidc_name, expires_at, created_at
+				oidc_subject, oidc_email, oidc_name, oidc_groups, expires_at, created_at
 			) VALUES (%s)
-		`, placeholders(r.store.Dialect, 10))
+		`, placeholders(r.store.Dialect, 11))
 
 		now := time.Now().UTC()
 		session.CreatedAt = now
@@ -44,6 +53,7 @@ func (r *SessionRepository) Create(ctx context.Context, session *model.Session) 
 			nullString(session.OIDCSubject),
 			nullString(session.OIDCEmail),
 			nullString(session.OIDCName),
+			string(groupsJSON),
 			formatTime(r.store.Dialect, session.ExpiresAt),
 			formatTime(r.store.Dialect, now),
 		); err != nil {
@@ -56,7 +66,7 @@ func (r *SessionRepository) Create(ctx context.Context, session *model.Session) 
 func (r *SessionRepository) GetByTokenHash(ctx context.Context, tokenHash string) (*model.Session, error) {
 	query := fmt.Sprintf(`
 		SELECT uuid, token_hash, principal_kind, local_user_uuid, identity_pool_uuid,
-		       oidc_subject, oidc_email, oidc_name, expires_at, created_at
+		       oidc_subject, oidc_email, oidc_name, oidc_groups, expires_at, created_at
 		FROM sessions
 		WHERE token_hash = %s
 	`, placeholder(r.store.Dialect, 1))
@@ -186,10 +196,11 @@ func scanSession(dialect db.Dialect, s scanner) (*model.Session, error) {
 		oidcSubject  sql.NullString
 		oidcEmail    sql.NullString
 		oidcName     sql.NullString
+		oidcGroups   string
 		expiresRaw   any
 		createdRaw   any
 	)
-	if err := s.Scan(&rawUUID, &tokenHash, &kind, &rawLocalUser, &rawPool, &oidcSubject, &oidcEmail, &oidcName, &expiresRaw, &createdRaw); err != nil {
+	if err := s.Scan(&rawUUID, &tokenHash, &kind, &rawLocalUser, &rawPool, &oidcSubject, &oidcEmail, &oidcName, &oidcGroups, &expiresRaw, &createdRaw); err != nil {
 		return nil, err
 	}
 
@@ -214,6 +225,13 @@ func scanSession(dialect db.Dialect, s scanner) (*model.Session, error) {
 		return nil, fmt.Errorf("scan created_at: %w", err)
 	}
 
+	var groups []string
+	if oidcGroups != "" {
+		if err := json.Unmarshal([]byte(oidcGroups), &groups); err != nil {
+			return nil, fmt.Errorf("unmarshal oidc groups: %w", err)
+		}
+	}
+
 	return &model.Session{
 		UUID:             id,
 		TokenHash:        tokenHash,
@@ -223,6 +241,7 @@ func scanSession(dialect db.Dialect, s scanner) (*model.Session, error) {
 		OIDCSubject:      oidcSubject.String,
 		OIDCEmail:        oidcEmail.String,
 		OIDCName:         oidcName.String,
+		OIDCGroups:       groups,
 		ExpiresAt:        expiresAt,
 		CreatedAt:        createdAt,
 	}, nil

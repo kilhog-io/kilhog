@@ -35,6 +35,7 @@ func init() {
 	rootCmd.AddCommand(healthCmd)
 	rootCmd.AddCommand(networkCmd)
 	rootCmd.AddCommand(subnetCmd)
+	rootCmd.AddCommand(grantCmd)
 }
 
 func exitErr(err error) error {

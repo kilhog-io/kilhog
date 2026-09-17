@@ -156,7 +156,7 @@ service (NetworkRepository, SubnetRepository, UserRepository, IdentityPoolReposi
 
 Each driver implements the interfaces defined in `internal/service`. SQL queries use adapted dialects where needed (UUID types, `TIMESTAMPTZ`, etc.).
 
-Concrete repository implementations live in `internal/repository/` (`network_repository.go`, `subnet_repository.go`) and are instantiated via `repository.Open`.
+Concrete repository implementations live in `internal/repository/` (`network_repository.go`, `subnet_repository.go`, `grant_repository.go`) and are instantiated via `repository.Open`.
 
 Native builds (`GOOS` ≠ `js`) compile SQLite and PostgreSQL drivers only. WASM builds (`GOOS=js GOARCH=wasm`) compile the D1 driver only, keeping the Worker binary smaller.
 
@@ -1226,7 +1226,7 @@ Handler tests: owner can POST grants and transfer; non-owner `403`; admin can tr
 
 ### Breaking change
 
-Until this RBAC is implemented, authenticated principals still have full IPAM access. Shipping it **revokes** implicit full access for local `user`, OIDC, and **machine identities**. Operators must assign `create_networks` and/or resource grants (or keep using `admin` / the deployment-wide API key). No automatic backfill.
+RBAC is implemented. Local `user`, OIDC, and machine identities no longer have implicit full IPAM access. Operators must assign `create_networks` and/or resource grants (or keep using `admin` / the deployment-wide API key). No automatic backfill.
 
 ## Configuration
 

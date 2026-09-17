@@ -2,9 +2,18 @@ package repository
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/kilhog-io/kilhog/internal/repository/db"
 )
+
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique") || strings.Contains(msg, "duplicate key")
+}
 
 func placeholder(dialect db.Dialect, index int) string {
 	if dialect == db.DialectPostgres {
