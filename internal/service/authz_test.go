@@ -1,9 +1,12 @@
 package service_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -462,5 +465,84 @@ func TestGrantService_EnsureOwnerIdempotentForPrivileged(t *testing.T) {
 	}
 	if len(list) != 0 {
 		t.Fatalf("privileged EnsureOwner should not insert rows, got %d", len(list))
+	}
+}
+
+func TestAuthorization_LogsDeniedAtDebug(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	previous := slog.Default()
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	ctx := context.Background()
+	e := openRBAC(t)
+	network := e.createNetwork(t, "logged")
+
+	if err := e.authz.Require(ctx, e.user, service.ActionRead, model.GrantResourceNetwork, network.UUID); !errors.Is(err, service.ErrResourceNotVisible) {
+		t.Fatalf("Require read = %v, want not visible", err)
+	}
+	hiddenLog := buf.String()
+	for _, want := range []string{
+		"rbac denied",
+		"no applicable grant or structural visibility",
+		"action=read",
+		"resource_kind=network",
+		network.UUID.String(),
+		"principal_kind=local_user",
+		"username=operator",
+		e.user.LocalUser.UUID.String(),
+	} {
+		if !strings.Contains(hiddenLog, want) {
+			t.Fatalf("not-visible log missing %q\n%s", want, hiddenLog)
+		}
+	}
+
+	e.grant(t, e.admin, service.CreateGrantInput{
+		Principal:   model.GrantPrincipal{Kind: model.GrantPrincipalLocalUser, LocalUserUUID: &e.user.LocalUser.UUID},
+		Resource:    model.GrantResource{Kind: model.GrantResourceNetwork, UUID: &network.UUID},
+		Permissions: model.Permissions{Read: true},
+	})
+	buf.Reset()
+	if err := e.authz.Require(ctx, e.user, service.ActionDelete, model.GrantResourceNetwork, network.UUID); !errors.Is(err, service.ErrPermissionDenied) {
+		t.Fatalf("Require delete = %v, want permission denied", err)
+	}
+	deniedLog := buf.String()
+	for _, want := range []string{
+		"rbac denied",
+		"missing required permission",
+		"action=delete",
+		"effective_read=true",
+		"effective_delete=false",
+		"grant_subjects=local_user:" + e.user.LocalUser.UUID.String(),
+	} {
+		if !strings.Contains(deniedLog, want) {
+			t.Fatalf("missing-permission log missing %q\n%s", want, deniedLog)
+		}
+	}
+
+	buf.Reset()
+	if err := e.authz.RequireOwner(ctx, e.user, model.GrantResourceNetwork, network.UUID); !errors.Is(err, service.ErrPermissionDenied) {
+		t.Fatalf("RequireOwner = %v, want permission denied", err)
+	}
+	ownerLog := buf.String()
+	if !strings.Contains(ownerLog, "not owner of resource") || !strings.Contains(ownerLog, "action=manage_grants") {
+		t.Fatalf("owner log = %s", ownerLog)
+	}
+
+	buf.Reset()
+	if err := e.authz.RequireCreateNetworks(ctx, e.user); !errors.Is(err, service.ErrPermissionDenied) {
+		t.Fatalf("RequireCreateNetworks = %v, want permission denied", err)
+	}
+	createLog := buf.String()
+	for _, want := range []string{
+		"missing create_networks grant",
+		"resource_kind=platform",
+		"capability=create_networks",
+		"username=operator",
+	} {
+		if !strings.Contains(createLog, want) {
+			t.Fatalf("create_networks log missing %q\n%s", want, createLog)
+		}
 	}
 }

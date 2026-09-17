@@ -1090,7 +1090,7 @@ handler (auth middleware → principal on context)
 | `CanCreateNetworks(ctx, principal)` | Privileged, or effective platform `create_networks` |
 | `Can(ctx, principal, action, resourceKind, resourceUUID)` | Effective permission after inheritance and group/pool expansion |
 | `IsOwner(ctx, principal, resourceKind, resourceUUID)` | `true` for local `admin` (implicit owner); otherwise an owner grant on the resource or an ancestor |
-| `Require` / `RequireOwner` | Typed errors for 404 vs 403 |
+| `Require` / `RequireOwner` | Typed errors for 404 vs 403; **debug log** `rbac denied` with reason, action, resource, and principal |
 | `VisibleNetworkUUIDs` / `FilterReadableSubnets` | List filtering |
 | `EffectivePermissions` | Union of flags including `owner` |
 
@@ -1258,7 +1258,8 @@ Logging uses the standard library `log/slog` with a text handler on stderr. Conf
 
 | Level   | HTTP requests | Other events |
 |---------|---------------|--------------|
-| `debug` | Method, path, status, duration, headers (`Authorization` / `X-API-Key` / `Cookie` redacted), request body, response body | Migration details, startup/shutdown |
+| `debug` | Method, path, status, duration, headers (`Authorization` / `X-API-Key` / `Cookie` redacted), request body, response body | Migration details, startup/shutdown, **RBAC denials** (`rbac denied`: reason, action, resource, principal/subject, effective flags) |
+| `info`  | Method, path, status, duration (one line per request) | Startup, migrations applied, SIGTERM shutdown, SQLite sync, database closed |
 | `info`  | Method, path, status, duration (one line per request) | Startup, migrations applied, SIGTERM shutdown, SQLite sync, database closed |
 | `warn`  | — | Warnings (e.g. database close failure) |
 | `error` | — | Fatal configuration or runtime errors |

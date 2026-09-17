@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/kilhog-io/kilhog/internal/model"
@@ -156,8 +158,14 @@ func (a *AuthorizationService) Require(ctx context.Context, principal *Principal
 		return err
 	}
 	if !visible {
+		logRBACDenied(principal, action, kind, resourceUUID, "", "no applicable grant or structural visibility")
 		return ErrResourceNotVisible
 	}
+	effective, err := a.EffectivePermissions(ctx, principal, kind, resourceUUID)
+	if err != nil {
+		return err
+	}
+	logRBACDenied(principal, action, kind, resourceUUID, "", "missing required permission", effectivePermissionAttrs(effective)...)
 	return userError(ErrPermissionDenied, "missing required permission")
 }
 
@@ -174,8 +182,10 @@ func (a *AuthorizationService) RequireOwner(ctx context.Context, principal *Prin
 		return err
 	}
 	if !visible {
+		logRBACDenied(principal, ActionManageGrants, kind, resourceUUID, "", "no applicable grant or structural visibility")
 		return ErrResourceNotVisible
 	}
+	logRBACDenied(principal, ActionManageGrants, kind, resourceUUID, "", "not owner of resource")
 	return userError(ErrPermissionDenied, "owner access required")
 }
 
@@ -187,6 +197,7 @@ func (a *AuthorizationService) RequireCreateNetworks(ctx context.Context, princi
 	if ok {
 		return nil
 	}
+	logRBACDenied(principal, ActionCreate, model.GrantResourcePlatform, uuid.Nil, model.CapabilityCreateNetworks, "missing create_networks grant")
 	return userError(ErrPermissionDenied, "missing create_networks permission")
 }
 
@@ -424,5 +435,110 @@ func permissionAllows(perms model.Permissions, owner bool, action Action) bool {
 		return false
 	default:
 		return false
+	}
+}
+
+func logRBACDenied(principal *Principal, action Action, kind model.GrantResourceKind, resourceUUID uuid.UUID, capability, reason string, extra ...any) {
+	attrs := []any{
+		"reason", reason,
+		"action", string(action),
+		"resource_kind", string(kind),
+	}
+	if resourceUUID != uuid.Nil {
+		attrs = append(attrs, "resource_uuid", resourceUUID.String())
+	}
+	if capability != "" {
+		attrs = append(attrs, "capability", capability)
+	}
+	attrs = append(attrs, principalLogAttrs(principal)...)
+	attrs = append(attrs, extra...)
+	slog.Debug("rbac denied", attrs...)
+}
+
+func principalLogAttrs(principal *Principal) []any {
+	if principal == nil {
+		return []any{"principal_kind", "none"}
+	}
+	attrs := []any{"principal_kind", string(principal.Kind)}
+	switch principal.Kind {
+	case model.PrincipalKindLocalUser:
+		if principal.LocalUser != nil {
+			attrs = append(attrs,
+				"username", principal.LocalUser.Username,
+				"local_user_uuid", principal.LocalUser.UUID.String(),
+				"role", string(principal.LocalUser.Role),
+				"enabled", principal.LocalUser.Enabled,
+			)
+		}
+	case model.PrincipalKindOIDC:
+		if principal.IdentityPoolUUID != nil {
+			attrs = append(attrs, "identity_pool_uuid", principal.IdentityPoolUUID.String())
+		}
+		attrs = append(attrs, "oidc_subject", principal.OIDCSubject)
+		if len(principal.OIDCGroups) > 0 {
+			attrs = append(attrs, "oidc_groups", strings.Join(principal.OIDCGroups, ","))
+		}
+	case model.PrincipalKindMachine:
+		if principal.MachineUUID != nil {
+			attrs = append(attrs, "machine_uuid", principal.MachineUUID.String())
+		}
+		if principal.MachinePoolUUID != nil {
+			attrs = append(attrs, "machine_pool_uuid", principal.MachinePoolUUID.String())
+		}
+		if principal.MachineName != "" {
+			attrs = append(attrs, "machine_name", principal.MachineName)
+		}
+	}
+	if subjects := GrantSubjects(principal); len(subjects) > 0 {
+		attrs = append(attrs, "grant_subjects", formatGrantSubjects(subjects))
+	}
+	return attrs
+}
+
+func formatGrantSubjects(subjects []model.GrantPrincipal) string {
+	parts := make([]string, 0, len(subjects))
+	for _, subject := range subjects {
+		parts = append(parts, formatGrantSubject(subject))
+	}
+	return strings.Join(parts, ",")
+}
+
+func formatGrantSubject(subject model.GrantPrincipal) string {
+	switch subject.Kind {
+	case model.GrantPrincipalLocalUser:
+		if subject.LocalUserUUID != nil {
+			return "local_user:" + subject.LocalUserUUID.String()
+		}
+	case model.GrantPrincipalOIDC:
+		pool := ""
+		if subject.IdentityPoolUUID != nil {
+			pool = subject.IdentityPoolUUID.String()
+		}
+		return "oidc:" + pool + "/" + subject.Subject
+	case model.GrantPrincipalOIDCGroup:
+		pool := ""
+		if subject.IdentityPoolUUID != nil {
+			pool = subject.IdentityPoolUUID.String()
+		}
+		return "oidc_group:" + pool + "/" + subject.Group
+	case model.GrantPrincipalMachine:
+		if subject.MachineUUID != nil {
+			return "machine:" + subject.MachineUUID.String()
+		}
+	case model.GrantPrincipalMachinePool:
+		if subject.MachinePoolUUID != nil {
+			return "machine_pool:" + subject.MachinePoolUUID.String()
+		}
+	}
+	return string(subject.Kind)
+}
+
+func effectivePermissionAttrs(access EffectiveAccess) []any {
+	return []any{
+		"effective_create", access.Permissions.Create,
+		"effective_read", access.Permissions.Read,
+		"effective_update", access.Permissions.Update,
+		"effective_delete", access.Permissions.Delete,
+		"effective_owner", access.Owner,
 	}
 }
