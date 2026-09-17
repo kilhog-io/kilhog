@@ -31,6 +31,7 @@ type CreateIdentityPoolInput struct {
 	ClientID     string
 	ClientSecret string
 	Scopes       []string
+	GroupsClaim  string
 	Enabled      *bool
 }
 
@@ -42,6 +43,7 @@ type UpdateIdentityPoolInput struct {
 	ClientSecret *string
 	ClearSecret  bool
 	Scopes       *[]string
+	GroupsClaim  *string
 	Enabled      *bool
 }
 
@@ -126,6 +128,7 @@ func (s *IdentityPoolService) Create(ctx context.Context, input CreateIdentityPo
 		ClientID:     clientID,
 		ClientSecret: strings.TrimSpace(input.ClientSecret),
 		Scopes:       scopes,
+		GroupsClaim:  normalizeGroupsClaim(input.GroupsClaim),
 		Enabled:      enabled,
 	}
 	if err := s.pools.Create(ctx, pool); err != nil {
@@ -178,6 +181,9 @@ func (s *IdentityPoolService) Update(ctx context.Context, id uuid.UUID, input Up
 	}
 	if input.Scopes != nil {
 		pool.Scopes = normalizeScopes(*input.Scopes)
+	}
+	if input.GroupsClaim != nil {
+		pool.GroupsClaim = normalizeGroupsClaim(*input.GroupsClaim)
 	}
 	if input.Enabled != nil {
 		pool.Enabled = *input.Enabled
@@ -282,4 +288,12 @@ func normalizeScopes(scopes []string) []string {
 		out = append([]string{"openid"}, out...)
 	}
 	return out
+}
+
+func normalizeGroupsClaim(raw string) string {
+	claim := strings.TrimSpace(raw)
+	if claim == "" {
+		return model.DefaultGroupsClaim
+	}
+	return claim
 }

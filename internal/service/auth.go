@@ -43,6 +43,7 @@ type Principal struct {
 	OIDCSubject      string              `json:"oidc_subject,omitempty"`
 	OIDCEmail        string              `json:"oidc_email,omitempty"`
 	OIDCName         string              `json:"oidc_name,omitempty"`
+	OIDCGroups       []string            `json:"oidc_groups,omitempty"`
 	SessionUUID      *uuid.UUID          `json:"session_uuid,omitempty"`
 	MachinePoolUUID  *uuid.UUID          `json:"machine_pool_uuid,omitempty"`
 	MachineUUID      *uuid.UUID          `json:"machine_uuid,omitempty"`
@@ -409,13 +410,13 @@ func (s *AuthService) CompleteOIDCLogin(ctx context.Context, state, code string)
 		return nil, nil, userError(ErrUnauthenticated, "invalid id_token nonce")
 	}
 
-	var claims struct {
-		Email string `json:"email"`
-		Name  string `json:"name"`
-	}
+	var claims map[string]any
 	_ = idToken.Claims(&claims)
+	email, _ := claims["email"].(string)
+	name, _ := claims["name"].(string)
+	groups := groupsFromClaim(claims, pool.GroupsClaim)
 
-	sessionToken, err := s.createOIDCSession(ctx, pool, idToken.Subject, claims.Email, claims.Name)
+	sessionToken, err := s.createOIDCSession(ctx, pool, idToken.Subject, email, name, groups)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -424,8 +425,9 @@ func (s *AuthService) CompleteOIDCLogin(ctx context.Context, state, code string)
 		Kind:             model.PrincipalKindOIDC,
 		IdentityPoolUUID: &poolUUID,
 		OIDCSubject:      idToken.Subject,
-		OIDCEmail:        claims.Email,
-		OIDCName:         claims.Name,
+		OIDCEmail:        email,
+		OIDCName:         name,
+		OIDCGroups:       groups,
 	}
 	return sessionToken, principal, nil
 }
@@ -462,7 +464,7 @@ func (s *AuthService) createLocalSession(ctx context.Context, user *model.LocalU
 	return &SessionToken{Token: raw, ExpiresAt: expires}, nil
 }
 
-func (s *AuthService) createOIDCSession(ctx context.Context, pool *model.IdentityPool, subject, email, name string) (*SessionToken, error) {
+func (s *AuthService) createOIDCSession(ctx context.Context, pool *model.IdentityPool, subject, email, name string, groups []string) (*SessionToken, error) {
 	raw, hash, err := newSessionToken()
 	if err != nil {
 		return nil, err
@@ -477,6 +479,7 @@ func (s *AuthService) createOIDCSession(ctx context.Context, pool *model.Identit
 		OIDCSubject:      subject,
 		OIDCEmail:        email,
 		OIDCName:         name,
+		OIDCGroups:       groups,
 		ExpiresAt:        expires,
 	}
 	if err := s.sessions.Create(ctx, session); err != nil {
@@ -520,6 +523,7 @@ func (s *AuthService) authenticateSession(ctx context.Context, rawToken string) 
 			OIDCSubject:      session.OIDCSubject,
 			OIDCEmail:        session.OIDCEmail,
 			OIDCName:         session.OIDCName,
+			OIDCGroups:       session.OIDCGroups,
 			SessionUUID:      &sessionUUID,
 		}, nil
 	default:
@@ -551,18 +555,18 @@ func (s *AuthService) authenticateOIDCBearer(ctx context.Context, rawToken strin
 				continue
 			}
 		}
-		var claims struct {
-			Email string `json:"email"`
-			Name  string `json:"name"`
-		}
+		var claims map[string]any
 		_ = idToken.Claims(&claims)
+		email, _ := claims["email"].(string)
+		name, _ := claims["name"].(string)
 		poolUUID := pool.UUID
 		return &Principal{
 			Kind:             model.PrincipalKindOIDC,
 			IdentityPoolUUID: &poolUUID,
 			OIDCSubject:      idToken.Subject,
-			OIDCEmail:        claims.Email,
-			OIDCName:         claims.Name,
+			OIDCEmail:        email,
+			OIDCName:         name,
+			OIDCGroups:       groupsFromClaim(claims, pool.GroupsClaim),
 		}, nil
 	}
 	return nil, ErrUnauthenticated
@@ -625,4 +629,46 @@ func RequireAdmin(principal *Principal) error {
 		return ErrForbidden
 	}
 	return nil
+}
+
+func groupsFromClaim(claims map[string]any, claimName string) []string {
+	if claimName == "" {
+		claimName = model.DefaultGroupsClaim
+	}
+	raw, ok := claims[claimName]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case string:
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return nil
+		}
+		return []string{v}
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				continue
+			}
+			s = strings.TrimSpace(s)
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }

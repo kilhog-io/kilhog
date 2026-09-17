@@ -14,7 +14,7 @@ kilhog/
 │   ├── kilhog/          # API server entry point (main.go, SIGTERM shutdown)
 │   ├── kilhog-worker/   # Cloudflare Workers WASM entry point (GOOS=js GOARCH=wasm)
 │   └── pogig/           # CLI entry point (Breton for "chick")
-│       └── internal/cmd/ # Cobra commands (network, subnet, health)
+│       └── internal/cmd/ # Cobra commands (network, subnet, grant, health)
 ├── pkg/
 │   └── kilhog/          # Public Go SDK for the REST API (shared by pogig and external consumers)
 ├── internal/
@@ -59,6 +59,7 @@ Technical modeling of `FUNCTIONAL.md`. See that file for business rules.
 | `MachineIdentityProvider` | `machine.go` | JWT/JWKS trust config owned by a machine pool |
 | `Machine`      | `machine.go`       | Named workload identity |
 | `MachineAPIKey`| `machine.go`       | Per-machine API key metadata (+ plaintext only at creation) |
+| `Grant`        | `grant.go`         | RBAC grant: CRUD + ownership on a network, subnet, or platform capability |
 
 ### `Network`
 
@@ -96,6 +97,26 @@ Constants: `IPv4HostPrefix` (32), `IPv6HostPrefix` (128).
 | `Kind` | `ParentKind`  | `kind` (`network`, `subnet`) |
 | `UUID` | `uuid.UUID`   | `uuid` |
 
+### `Grant`
+
+RBAC assignment defined in `FUNCTIONAL.md`. One row per `(principal, resource)`.
+
+| Field | Type | JSON |
+|-------|------|------|
+| `UUID` | `uuid.UUID` | `uuid` |
+| `Principal` | `GrantPrincipal` | `principal` |
+| `Resource` | `GrantResource` | `resource` |
+| `Permissions` | `Permissions` | `permissions` (`create`, `read`, `update`, `delete` booleans) |
+| `Owner` | `bool` | `owner` |
+| `CreatedAt` | `time.Time` | `created_at` |
+| `UpdatedAt` | `time.Time` | `updated_at` |
+
+`GrantPrincipal.Kind` is one of `local_user`, `oidc`, `oidc_group`, `machine`, `machine_pool`.
+
+`GrantResource.Kind` is `network`, `subnet`, or `platform`. Platform resources use `capability` (`create_networks`); others use `uuid`.
+
+`owner = true` implies all four CRUD flags. Platform grants cannot have `owner = true`.
+
 ## Repository interfaces (`internal/service`)
 
 Interfaces defined on the service side (consumed by business logic):
@@ -107,6 +128,8 @@ Interfaces defined on the service side (consumed by business logic):
 - `IdentityPoolRepository` — OIDC identity pools
 - `SessionRepository` / `OIDCLoginStateRepository` — sessions and PKCE state
 - `MachinePoolRepository` / `MachineProviderRepository` / `MachineRepository` / `MachineAPIKeyRepository` — machine identities
+- `GrantRepository` — CRUD and listing of grants (by UUID, by resource, by principal, platform capabilities)
+- `AuthorizationService` — evaluates effective CRUD and ownership (inheritance, groups, machine pools, privileged bypass, list filtering)
 
 ## IPv4 utilities (`internal/iputil`)
 
@@ -123,7 +146,7 @@ Interfaces defined on the service side (consumed by business logic):
 ### Abstraction
 
 ```
-service (NetworkRepository, SubnetRepository, UserRepository, IdentityPoolRepository, SessionRepository, MachinePoolRepository, …)
+service (NetworkRepository, SubnetRepository, UserRepository, IdentityPoolRepository, SessionRepository, MachinePoolRepository, GrantRepository, …)
     └── repository/
             ├── sqlite/    → SQLite implementations (native)
             ├── postgres/  → PostgreSQL implementations (native)
@@ -133,7 +156,7 @@ service (NetworkRepository, SubnetRepository, UserRepository, IdentityPoolReposi
 
 Each driver implements the interfaces defined in `internal/service`. SQL queries use adapted dialects where needed (UUID types, `TIMESTAMPTZ`, etc.).
 
-Concrete repository implementations live in `internal/repository/` (`network_repository.go`, `subnet_repository.go`) and are instantiated via `repository.Open`.
+Concrete repository implementations live in `internal/repository/` (`network_repository.go`, `subnet_repository.go`, `grant_repository.go`) and are instantiated via `repository.Open`.
 
 Native builds (`GOOS` ≠ `js`) compile SQLite and PostgreSQL drivers only. WASM builds (`GOOS=js GOARCH=wasm`) compile the D1 driver only, keeping the Worker binary smaller.
 
@@ -223,7 +246,9 @@ internal/repository/migration/migrations/sqlite/
 ├── 002_auth.up.sql
 ├── 002_auth.down.sql
 ├── 003_machine_identities.up.sql
-└── 003_machine_identities.down.sql
+├── 003_machine_identities.down.sql
+├── 004_rbac.up.sql
+└── 004_rbac.down.sql
 ```
 
 #### Tracking table: `schema_migrations`
@@ -318,6 +343,10 @@ Adds local users, OIDC identity pools, sessions, and OIDC login-state tables (se
 
 Adds machine pools, JWT providers (JWKS), machines, and per-machine API keys.
 
+#### RBAC script (`004_rbac`)
+
+Adds the `grants` table, `groups_claim` on OIDC identity pools, and `oidc_groups` on sessions. Downgrade drops the grants table and those columns.
+
 #### `local_users` table
 
 | Column          | Type          | Constraints | Maps to |
@@ -343,6 +372,7 @@ Adds machine pools, JWT providers (JWKS), machines, and per-machine API keys.
 | `client_id`     | TEXT          | NOT NULL    | `IdentityPool.ClientID` |
 | `client_secret` | TEXT          | NULL        | stored secret (never returned; `has_client_secret` exposed) |
 | `scopes`        | TEXT          | NOT NULL (JSON array) | `IdentityPool.Scopes` |
+| `groups_claim`  | TEXT          | NOT NULL, default `groups` | JWT claim listing IdP groups |
 | `enabled`       | BOOL/INT      | NOT NULL    | `IdentityPool.Enabled` |
 | `created_at` / `updated_at` | TIMESTAMPTZ | NOT NULL | timestamps |
 
@@ -356,6 +386,7 @@ Adds machine pools, JWT providers (JWKS), machines, and per-machine API keys.
 | `local_user_uuid` | FK → `local_users` (CASCADE) when kind is local |
 | `identity_pool_uuid` | FK → pools (SET NULL) when kind is OIDC |
 | `oidc_subject` / `oidc_email` / `oidc_name` | Federated claims |
+| `oidc_groups` | JSON array of group names from `groups_claim` (OIDC sessions) |
 | `expires_at` | Session expiry |
 
 #### `oidc_login_states` table
@@ -412,6 +443,59 @@ Short-lived PKCE/`state`/`nonce` rows for Authorization Code + PKCE (TTL ~10 min
 
 The plaintext secret is never stored. HTTP `DELETE` on a key sets `revoked_at`.
 
+#### `grants` table
+
+One ACL row per principal and resource. Permission flags are booleans (`INTEGER` 0/1 on SQLite).
+
+| Column | Type | Constraints | Maps to |
+|--------|------|-------------|---------|
+| `uuid` | UUID | PK | `Grant.UUID` |
+| `principal_kind` | TEXT | NOT NULL, CHECK IN (`local_user`, `oidc`, `oidc_group`, `machine`, `machine_pool`) | `GrantPrincipal.Kind` |
+| `local_user_uuid` | UUID | NULL, FK → `local_users` ON DELETE CASCADE | `local_user` |
+| `identity_pool_uuid` | UUID | NULL, FK → `oidc_identity_pools` ON DELETE CASCADE | `oidc` / `oidc_group` |
+| `oidc_subject` | TEXT | NULL | IdP `sub` when `oidc` |
+| `oidc_group` | TEXT | NULL | Group name when `oidc_group` |
+| `machine_uuid` | UUID | NULL, FK → `machines` ON DELETE CASCADE | `machine` |
+| `machine_pool_uuid` | UUID | NULL, FK → `machine_pools` ON DELETE CASCADE | `machine_pool` |
+| `resource_kind` | TEXT | NOT NULL, CHECK IN (`network`, `subnet`, `platform`) | `GrantResource.Kind` |
+| `resource_uuid` | UUID | NULL | Network or subnet UUID |
+| `capability` | TEXT | NULL, CHECK IN (`create_networks`) | Platform capability |
+| `can_create` | BOOL/INT | NOT NULL | `permissions.create` |
+| `can_read` | BOOL/INT | NOT NULL | `permissions.read` |
+| `can_update` | BOOL/INT | NOT NULL | `permissions.update` |
+| `can_delete` | BOOL/INT | NOT NULL | `permissions.delete` |
+| `owner` | BOOL/INT | NOT NULL | `owner` |
+| `created_at` / `updated_at` | TIMESTAMPTZ | NOT NULL | timestamps |
+
+Checks:
+
+- Principal columns match `principal_kind` (exactly the columns for that kind are NOT NULL).
+- If `resource_kind` is `network` or `subnet`: `resource_uuid` NOT NULL, `capability` NULL; at least one of the four CRUD flags or `owner` is true.
+- If `resource_kind` is `platform`: `capability` NOT NULL, `resource_uuid` NULL, `owner` false, `can_create` true.
+- If `owner` is true: resource is `network` or `subnet` (CRUD treated as all true).
+
+Unique indexes:
+
+- local user + resource
+- OIDC principal (`identity_pool_uuid`, `oidc_subject`) + resource
+- OIDC group (`identity_pool_uuid`, `oidc_group`) + resource
+- machine + resource
+- machine pool + resource
+
+Resource identity for uniqueness is `(resource_kind, resource_uuid, capability)`.
+
+Lookup indexes on `(resource_kind, resource_uuid)`, `local_user_uuid`, `(identity_pool_uuid, oidc_subject)`, `(identity_pool_uuid, oidc_group)`, `machine_uuid`, `machine_pool_uuid`.
+
+Resource cascade (same polymorphic pattern as `tags`):
+
+- `(network, resource_uuid)` → `networks(uuid)` ON DELETE CASCADE
+- `(subnet, resource_uuid)` → `subnets(uuid)` ON DELETE CASCADE
+
+```
+networks / subnets ──< grants
+local_users | oidc pools | machines | machine_pools ──< grants
+```
+
 ### Dialect differences
 
 | Aspect | SQLite | PostgreSQL | Cloudflare D1 |
@@ -456,6 +540,7 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 | POST    | `/auth/login`       | no            | Local username/password login |
 | POST    | `/auth/logout`      | no            | End session (cookie / bearer token) |
 | GET     | `/auth/me`          | yes*          | Current principal |
+| GET     | `/auth/me/grants`   | yes*          | Grants targeting the current principal (including group/pool) |
 | GET     | `/auth/oidc/pools`  | no            | List enabled OIDC pools (name + slug) |
 | GET     | `/auth/oidc/{slug}/login` | no      | Start OIDC Authorization Code + PKCE |
 | GET     | `/auth/oidc/callback` | no          | OIDC callback; issues session |
@@ -463,12 +548,17 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 | POST    | `/users/me/password`| local user    | Change own password |
 | GET/POST/PUT/DELETE | `/auth/identity-pools…` | admin | OIDC pool administration |
 | GET/POST/PUT/DELETE | `/auth/machine-pools…` | admin | Machine pools, JWT providers, machines, API keys |
-| GET     | `/networks`         | yes*          | List all networks |
+| GET/POST/PUT/DELETE | `/auth/platform-grants…` | admin | Platform `create_networks` grants |
+| GET/POST/PUT/DELETE | `/networks/{uuid}/grants…` | admin or owner | Grants on a network |
+| POST    | `/networks/{uuid}/ownership/transfer` | admin or owner | Transfer network ownership |
+| GET/POST/PUT/DELETE | `/networks/{uuid}/subnets/{subnet_uuid}/grants…` | admin or owner | Grants on a subnet |
+| POST    | `/networks/{uuid}/subnets/{subnet_uuid}/ownership/transfer` | admin or owner | Transfer subnet ownership |
+| GET     | `/networks`         | yes*          | List networks the caller may read |
 | POST    | `/networks`         | yes*          | Create a network |
 | GET     | `/networks/{uuid}`  | yes*          | Get a network by UUID |
 | PUT     | `/networks/{uuid}`  | yes*          | Update a network |
 | DELETE  | `/networks/{uuid}`  | yes*          | Delete a network (refused if subnets have this network as parent) |
-| GET     | `/networks/{uuid}/subnets` | yes*   | List all subnets in a network |
+| GET     | `/networks/{uuid}/subnets` | yes*   | List subnets in a network the caller may read |
 | POST    | `/networks/{uuid}/subnets` | yes*   | Create a direct child subnet of the network |
 | GET     | `/networks/{uuid}/subnets/{subnet_uuid}` | yes* | Get a subnet in the network |
 | PUT     | `/networks/{uuid}/subnets/{subnet_uuid}` | yes* | Update a subnet description |
@@ -476,7 +566,7 @@ Migrations may contain dialect-specific sections if needed; otherwise SQL stays 
 | GET     | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | yes* | List child subnets of a subnet |
 | POST    | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` | yes* | Create a child subnet of a subnet |
 
-> \* Protected IPAM and admin routes require authentication. Auth is configured when at least one of: non-empty `KILHOG_API_KEY`, ≥1 local user, ≥1 enabled OIDC pool, or ≥1 enabled machine pool. Otherwise protected routes return `403`. Invalid credentials return `401`. `GET /healthz`, `GET /metrics`, and public auth discovery/login routes stay reachable without a session.
+> \* Protected IPAM and admin routes require authentication. Auth is configured when at least one of: non-empty `KILHOG_API_KEY`, ≥1 local user, ≥1 enabled OIDC pool, or ≥1 enabled machine pool. Otherwise protected routes return `403`. Invalid credentials return `401`. After authentication, IPAM routes are **authorized per grant** (see [Authorization (RBAC)](#authorization-rbac)): local `admin` and the deployment-wide API key bypass grants; other principals need a matching grant (or ownership / `create_networks`). `GET /healthz`, `GET /metrics`, and public auth discovery/login routes stay reachable without a session.
 
 > **Tenancy**: all subnet operations go through `/networks/{uuid}/…`. The network `uuid` in the URL is the isolation boundary; the server verifies that each subnet belongs to that network (directly or via the parent hierarchy).
 
@@ -486,10 +576,10 @@ Four methods are implemented (OR semantics). See `FUNCTIONAL.md` for business ru
 
 | Method | How presented | Notes |
 |--------|---------------|-------|
-| API key (deployment-wide) | `Authorization: Bearer <key>` or `X-API-Key` | Shared secret from `KILHOG_API_KEY`; IPAM access only. Get-started path. |
+| API key (deployment-wide) | `Authorization: Bearer <key>` or `X-API-Key` | Shared secret from `KILHOG_API_KEY`; full IPAM bypass; get-started path; not identity or grant admin |
 | Local session | `Authorization: Bearer <session_token>` or cookie `kilhog_session` | Issued by `/auth/bootstrap` or `/auth/login` |
-| OIDC | Session after code flow, or Bearer JWT validated against an enabled human pool | Admin of users/pools/machines requires a local `admin` account |
-| Machine identity | Per-machine API key (`khog_mkey_…`) via Bearer or `X-API-Key`, or Bearer JWT | Named principal; IPAM only; no kilhog session |
+| OIDC | Session after code flow, or Bearer JWT validated against an enabled human pool | IPAM via grants (principal + IdP groups); identity admin requires a local `admin` account |
+| Machine identity | Per-machine API key (`khog_mkey_…`) via Bearer or `X-API-Key`, or Bearer JWT | Named principal; IPAM via grants on the machine or its pool; no kilhog session |
 
 Bearer handling order: deployment-wide API key, machine API key (non-JWT), session token, machine JWT (JWKS), then human OIDC JWT.
 
@@ -563,7 +653,7 @@ Authentication not configured:
 
 The API is organized around the **network as the tenancy boundary**:
 
-- **RBAC**: permissions can be defined per `network/{uuid}` without walking the subnet tree.
+- **RBAC**: platform `create_networks`, then grants on `network/{uuid}` and optionally `subnet/{uuid}` (see [Authorization (RBAC)](#authorization-rbac)). Owners manage grants inside their tenancy.
 - **Multi-tenancy**: every subnet request explicitly carries the target network; a subnet from another network returns `404`.
 - **Merge / federation**: two instances can merge networks independently; the network UUID is the grouping key.
 - **Implicit parent**: the create request body no longer contains `parent` — it is derived from the URL, avoiding URL/body inconsistencies.
@@ -653,7 +743,7 @@ sum(rate(http_server_request_count_total[5m]))
 
 #### `GET /networks`
 
-Lists all networks, sorted by name.
+Lists networks the caller may read, sorted by name. Local `admin` and the deployment-wide API key see every network. Other principals see only networks allowed by grants (including group/pool grants and structural visibility).
 
 `200 OK` response:
 
@@ -691,13 +781,16 @@ Request body:
 | `description` | no       | Free-form text |
 | `tags`        | no       | Key–value pairs (unique keys per resource) |
 
-`201 Created` response: the created network in `data`.
+`201 Created` response: the created network in `data`. For a local `user`, OIDC principal, or machine, the server also inserts an **owner** grant on that network for the creator.
+
+`POST /networks` is allowed for a local `admin`, the deployment-wide API key, or a principal with effective `create_networks`.
 
 Errors:
 
 | Code | Condition |
 |------|-----------|
 | `400` | Invalid JSON body, missing `name`, duplicate tag key |
+| `403` | Authenticated but missing `create_networks` (and not admin / deployment API key) |
 | `409` | `name` already in use |
 
 #### `GET /networks/{uuid}`
@@ -711,7 +804,8 @@ Errors:
 | Code | Condition |
 |------|-----------|
 | `400` | Invalid UUID |
-| `404` | Network not found |
+| `403` | Visible network, missing `read` |
+| `404` | Network not found or not visible |
 
 #### `PUT /networks/{uuid}`
 
@@ -724,7 +818,8 @@ Errors:
 | Code | Condition |
 |------|-----------|
 | `400` | Invalid UUID or body |
-| `404` | Network not found |
+| `403` | Visible network, missing `update` |
+| `404` | Network not found or not visible |
 | `409` | `name` already used by another network |
 
 #### `DELETE /networks/{uuid}`
@@ -745,7 +840,8 @@ Errors:
 | Code | Condition |
 |------|-----------|
 | `400` | Invalid UUID |
-| `404` | Network not found |
+| `403` | Visible network, missing `delete` |
+| `404` | Network not found or not visible |
 | `409` | Network has child subnets |
 
 ### Service layer (`internal/service/network.go`)
@@ -761,7 +857,7 @@ Errors:
 
 ### Subnets
 
-All subnet routes are **scoped by network** (`{uuid}` = network UUID). The parent is **not** provided in the request body: it is implicit via the URL.
+All subnet routes are **scoped by network** (`{uuid}` = network UUID). The parent is **not** provided in the request body: it is implicit via the URL. After authentication, each route is authorized per [RBAC](#authorization-rbac).
 
 | Route | Implicit parent |
 |-------|-----------------|
@@ -970,6 +1066,168 @@ Errors:
 - **Delete protection**: refused if child subnets exist (`ErrSubnetHasChildren`, HTTP 409)
 - Optional `WithSubnetMetrics`: updates in-memory functional metrics on successful create/update/delete
 
+## Authorization (RBAC)
+
+Implements `FUNCTIONAL.md` § Authorization. Handlers stay HTTP-facing; evaluation lives in `internal/service`.
+
+### Layering
+
+```
+handler (auth middleware → principal on context)
+    ├── requireAdmin for /users, /auth/identity-pools, /auth/machine-pools, /auth/platform-grants
+    ├── grant routes: requireAdmin OR owner of the resource (admin bypasses ownership)
+    └── IPAM handlers call AuthorizationService, then NetworkService / SubnetService
+            └── GrantRepository
+```
+
+`NetworkService` and `SubnetService` remain HTTP-unaware. After a successful `Create` of a network by a non-privileged principal, the handler (or a small `GrantService.EnsureOwner`) inserts the owner grant in the same write transaction when possible.
+
+### `AuthorizationService` (`internal/service/authz.go`)
+
+| Method | Role |
+|--------|------|
+| `IsPrivileged(principal)` | Local `admin` or deployment-wide API key |
+| `CanCreateNetworks(ctx, principal)` | Privileged, or effective platform `create_networks` |
+| `Can(ctx, principal, action, resourceKind, resourceUUID)` | Effective permission after inheritance and group/pool expansion |
+| `IsOwner(ctx, principal, resourceKind, resourceUUID)` | `true` for local `admin` (implicit owner); otherwise an owner grant on the resource or an ancestor |
+| `Require` / `RequireOwner` | Typed errors for 404 vs 403; **debug log** `rbac denied` with reason, action, resource, and principal |
+| `VisibleNetworkUUIDs` / `FilterReadableSubnets` | List filtering |
+| `EffectivePermissions` | Union of flags including `owner` |
+
+`action` is `create`, `read`, `update`, `delete`, or `manage_grants` (equivalent to owner check).
+
+#### Evaluation algorithm
+
+1. Local `admin` → allow all IPAM actions **and** treat as owner of every network/subnet (`IsOwner` is always true). Deployment-wide API key → allow IPAM actions only (not grant/ownership routes).
+2. Expand the principal to a set of grant subjects: self, plus OIDC groups from the session/JWT, plus the machine’s pool when `kind = machine`. **Drop subjects that are disabled or deleted** (inert grants).
+3. Load grants for remaining subjects on the target, ancestor subnets, and root network (and platform row for `create_networks`).
+4. Union flags. `owner` implies all CRUD.
+5. Structural visibility: `read` on ancestors of any granted subnet.
+
+#### Handler mapping
+
+| Route | Check |
+|-------|--------|
+| `GET /networks` | Filter via `VisibleNetworkUUIDs` |
+| `POST /networks` | `CanCreateNetworks`; then `EnsureOwner` for non-privileged creators |
+| `GET/PUT/DELETE /networks/{uuid}` | `read` / `update` / `delete` on that network |
+| `POST /networks/{uuid}/subnets` | `create` on the network |
+| Subnet GET/PUT/DELETE | `read` / `update` / `delete` on that subnet |
+| `POST …/subnets/{id}/subnets` | `create` on the parent subnet |
+| Grant admin on a network/subnet | `RequireOwner` (local `admin` always passes) |
+| `POST …/ownership/transfer` | `RequireOwner`; then `GrantService.Transfer` |
+| `/auth/platform-grants` | Local `admin` only |
+
+`404` when the resource is not visible; `403` when it is visible but the flag is missing. Cross-tenant subnet URLs stay `404`.
+
+### `GrantService` (`internal/service/grant.go`)
+
+- UUID generation; validate subject exists and is not a local `admin`
+- Validate resource (network/subnet in URL tenancy, or platform `create_networks`)
+- `owner` implies CRUD; platform grants reject `owner`
+- Uniqueness `(principal, resource)` → `409`
+- Replace-all flags on update
+- Refuse last-owner removal unless the caller is `admin`
+- `EnsureOwner` after network create
+- `Transfer(ctx, caller, resource, from, to)` — single write transaction: upsert destination `owner = true`, then drop `owner` on the source (delete the source row if no flags remain). `from` defaults to the caller. Reject disabled `to`. Non-admin cannot finish with zero owner rows.
+
+`GrantRepository`: `Create`, `Get`, `Update`, `Delete`, `ListByResource`, `ListByPrincipal`, `ListEffectiveForPrincipal` (self + groups + pool, **excluding disabled subjects**), `ListPlatform`, `ListByNetwork`, `CountOwners`.
+
+### Grant routes
+
+#### `GET /auth/me/grants`
+
+Authenticated. Returns grants that apply to the caller (direct + OIDC groups + machine pool). Inert grants (disabled subjects) are omitted. Deployment-wide API key → `data: []`.
+
+#### Platform grants (admin)
+
+| Method | Route |
+|--------|--------|
+| GET/POST | `/auth/platform-grants` |
+| GET/PUT/DELETE | `/auth/platform-grants/{grant_uuid}` |
+
+`POST` body:
+
+```json
+{
+  "principal": {
+    "kind": "oidc_group",
+    "identity_pool_uuid": "22222222-2222-2222-2222-222222222222",
+    "group": "ipam-operators"
+  },
+  "capability": "create_networks"
+}
+```
+
+Other principal kinds: `local_user` + `local_user_uuid`; `oidc` + pool + `subject`; `machine` + `machine_uuid`; `machine_pool` + `machine_pool_uuid`.
+
+#### Network and subnet grants (admin or owner)
+
+| Method | Route |
+|--------|--------|
+| GET/POST | `/networks/{uuid}/grants` |
+| GET/PUT/DELETE | `/networks/{uuid}/grants/{grant_uuid}` |
+| GET/POST | `/networks/{uuid}/subnets/{subnet_uuid}/grants` |
+| GET/PUT/DELETE | `/networks/{uuid}/subnets/{subnet_uuid}/grants/{grant_uuid}` |
+
+`POST` body example:
+
+```json
+{
+  "principal": {
+    "kind": "machine",
+    "machine_uuid": "44444444-4444-4444-4444-444444444444"
+  },
+  "permissions": {
+    "create": true,
+    "read": true,
+    "update": false,
+    "delete": false
+  },
+  "owner": false
+}
+```
+
+`PUT` body: `{ "permissions": { … }, "owner": false }`. Principal and resource are immutable. Setting `owner: true` **shares** ownership (existing owners stay).
+
+Errors: `400` invalid subject/flags; `403` not admin and not owner; `404` resource or grant not visible/not found; `409` duplicate grant or last-owner conflict.
+
+#### Transfer ownership
+
+`POST /networks/{uuid}/ownership/transfer`
+
+`POST /networks/{uuid}/subnets/{subnet_uuid}/ownership/transfer`
+
+Request body:
+
+```json
+{
+  "from": {
+    "kind": "local_user",
+    "local_user_uuid": "11111111-1111-1111-1111-111111111111"
+  },
+  "to": {
+    "kind": "oidc_group",
+    "identity_pool_uuid": "22222222-2222-2222-2222-222222222222",
+    "group": "netops"
+  }
+}
+```
+
+`from` is optional: omit it to transfer the caller’s own owner grant. A local `admin` may transfer any owner grant. `200 OK` returns the destination grant in `data`.
+
+Errors: `400` missing `to`, invalid principals; `403` not admin and not owner; `404` resource or source owner grant not found; `409` destination disabled, or transfer would leave zero owners (non-admin).
+
+### Tests
+
+Table-driven `AuthorizationService` tests: admin implicit owner (bypass) on networks and subnets; deployment-key IPAM bypass without grant routes; default deny for users/OIDC/machines; `create_networks` via user, OIDC group, and machine pool; auto-owner on network create; share ownership (`owner = true`); atomic transfer (source loses owner, destination gains it); last-owner protection on grant delete vs allowed transfer; disabled/deleted subjects make grants inert; group membership loss drops group grants; network owner inherits subnet CRUD and grant management; subnet owner cannot manage the parent network; structural read-up; sibling isolation.
+
+Handler tests: owner can POST grants and transfer; non-owner `403`; admin can transfer after all owners revoked; platform grants admin-only; list filtering.
+
+### Breaking change
+
+RBAC is implemented. Local `user`, OIDC, and machine identities no longer have implicit full IPAM access. Operators must assign `create_networks` and/or resource grants (or keep using `admin` / the deployment-wide API key). No automatic backfill.
+
 ## Configuration
 
 | Variable           | Default             | Description |
@@ -977,7 +1235,7 @@ Errors:
 | `KILHOG_HOST`      | `0.0.0.0`           | HTTP listen address (native server only) |
 | `KILHOG_PORT`      | `8080`              | HTTP listen port (native server only) |
 | `KILHOG_LOG_LEVEL` | `info`              | Log level: `debug`, `info`, `warn`, `error`, or `off` |
-| `KILHOG_API_KEY`   | *(empty)*           | Shared API key for IPAM routes; one of the auth methods |
+| `KILHOG_API_KEY`   | *(empty)*           | Deployment-wide API key (get-started IPAM bypass); one of the auth methods |
 | `KILHOG_BOOTSTRAP_TOKEN` | *(empty)*     | Optional secret required for `POST /auth/bootstrap` |
 | `KILHOG_PUBLIC_URL` | *(empty)*          | Public base URL for OIDC redirect URIs (no trailing slash) |
 | `KILHOG_SESSION_TTL` | `24h`             | Session lifetime (Go duration or integer seconds) |
@@ -1000,7 +1258,8 @@ Logging uses the standard library `log/slog` with a text handler on stderr. Conf
 
 | Level   | HTTP requests | Other events |
 |---------|---------------|--------------|
-| `debug` | Method, path, status, duration, headers (`Authorization` / `X-API-Key` / `Cookie` redacted), request body, response body | Migration details, startup/shutdown |
+| `debug` | Method, path, status, duration, headers (`Authorization` / `X-API-Key` / `Cookie` redacted), request body, response body | Migration details, startup/shutdown, **RBAC denials** (`rbac denied`: reason, action, resource, principal/subject, effective flags) |
+| `info`  | Method, path, status, duration (one line per request) | Startup, migrations applied, SIGTERM shutdown, SQLite sync, database closed |
 | `info`  | Method, path, status, duration (one line per request) | Startup, migrations applied, SIGTERM shutdown, SQLite sync, database closed |
 | `warn`  | — | Warnings (e.g. database close failure) |
 | `error` | — | Fatal configuration or runtime errors |
@@ -1217,7 +1476,8 @@ pkg/kilhog/
 ├── error.go    # APIError for non-success responses
 ├── health.go   # GET /healthz
 ├── network.go  # Network CRUD
-└── subnet.go   # Subnet CRUD (network-scoped routes)
+├── subnet.go   # Subnet CRUD (network-scoped routes)
+└── grant.go    # Grants (platform, network, subnet) and ListMyGrants
 ```
 
 ### Client configuration
@@ -1249,6 +1509,11 @@ client, err := kilhog.NewClientFromEnv()
 | `ListNetworks`, `GetNetwork`, `CreateNetwork`, `UpdateNetwork`, `DeleteNetwork` | `/networks` … |
 | `ListSubnets`, `GetSubnet`, `CreateSubnetInNetwork`, `UpdateSubnet`, `DeleteSubnet` | `/networks/{uuid}/subnets` … |
 | `CreateSubnetUnderParent`, `ListChildSubnets` | `/networks/{uuid}/subnets/{subnet_uuid}/subnets` … |
+| `ListMyGrants` | `GET /auth/me/grants` |
+| `ListPlatformGrants`, `CreatePlatformGrant`, `UpdatePlatformGrant`, `DeletePlatformGrant` | `/auth/platform-grants` … |
+| `ListNetworkGrants`, `CreateNetworkGrant`, `UpdateNetworkGrant`, `DeleteNetworkGrant` | `/networks/{uuid}/grants` … |
+| `TransferNetworkOwnership`, `TransferSubnetOwnership` | `POST …/ownership/transfer` |
+| `ListSubnetGrants`, `CreateSubnetGrant`, `UpdateSubnetGrant`, `DeleteSubnetGrant` | `/networks/{uuid}/subnets/{subnet_uuid}/grants` … |
 
 Errors from the API are returned as `*kilhog.APIError` with the HTTP status code and server message. A **403** whose body is not the kilhog error envelope (HTML or empty, typical of Cloud Armor `deny-403`) includes a hint to enable JSON parsing on the security policy; see [Load balancer and Cloud Armor](#load-balancer-and-cloud-armor).
 
@@ -1297,6 +1562,13 @@ Same variables and flags as the SDK:
 | `pogig subnet create --network <uuid> --name … --prefix … [--address …] [--parent-subnet …]` | Create a subnet |
 | `pogig subnet update <subnet-uuid> --network <uuid> --description …` | Update a subnet description |
 | `pogig subnet delete <subnet-uuid> --network <uuid>` | Delete a subnet |
+| `pogig grant me` | List grants for the current principal |
+| `pogig grant platform list\|create\|update\|delete` | Platform `create_networks` grants (admin) |
+| `pogig grant list --network <uuid> [--subnet <uuid>]` | List grants on a network or subnet (admin or owner) |
+| `pogig grant create --network <uuid> [--subnet <uuid>] --principal-kind … [--owner] --read/--create/--update/--delete` | Create a resource grant (use `--owner` to **share** ownership) |
+| `pogig grant transfer --network <uuid> [--subnet <uuid>] --to-kind … [--from-kind …]` | Transfer ownership |
+| `pogig grant update <grant-uuid> …` | Replace grant flags |
+| `pogig grant delete <grant-uuid> --network <uuid> [--subnet <uuid>]` | Delete a grant |
 
 Successful reads and writes print JSON to stdout.
 
@@ -1446,8 +1718,8 @@ expression = "evaluatePreconfiguredExpr('sqli-v33-stable') || evaluatePreconfigu
 with the rules in `terraform/cloud_armor.tf` (all three must be in the same `rules` list):
 
 - priority **2147483647**: default `allow` with `versioned_expr = "SRC_IPS_V1"` and `src_ip_ranges = ["*"]`. The Cloud Armor API rejects any update that lists `rules` without this rule (`Every security policy must have a default rule at priority 2147483647 with match condition *`).
-- priority 1000: `evaluatePreconfiguredWaf('sqli-v33-stable', {'sensitivity': 1})` plus `preconfigured_waf_config` exclusions on `name`, `description`, `address`, `prefix`, `type`, `tags`
-- priority 1001: XSS at sensitivity 1, exclusions on `name`, `description`, `tags`
+- priority 1000: `evaluatePreconfiguredWaf('sqli-v33-stable', {'sensitivity': 1})` plus `preconfigured_waf_config` exclusions on `name`, `description`, `address`, `prefix`, `type`, `tags`, `permissions`, `principal`, `subject`, `group`, `capability`
+- priority 1001: XSS at sensitivity 1, exclusions on `name`, `description`, `tags`, `subject`, `group`
 - `advanced_options_config.json_parsing = "STANDARD"`
 
 Do **not** change REST field names or switch to form encoding to dodge signatures. Headers, cookies, and the URL remain covered.

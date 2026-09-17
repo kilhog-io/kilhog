@@ -22,21 +22,24 @@ type updateSubnetRequest struct {
 	Description string `json:"description"`
 }
 
-func registerSubnetRoutes(mux *http.ServeMux, svc *service.SubnetService) {
-	mux.HandleFunc("GET /networks/{uuid}/subnets", listNetworkSubnetsHandler(svc))
-	mux.HandleFunc("POST /networks/{uuid}/subnets", createNetworkSubnetHandler(svc))
-	mux.HandleFunc("GET /networks/{uuid}/subnets/{subnet_uuid}", getNetworkSubnetHandler(svc))
-	mux.HandleFunc("PUT /networks/{uuid}/subnets/{subnet_uuid}", updateNetworkSubnetHandler(svc))
-	mux.HandleFunc("DELETE /networks/{uuid}/subnets/{subnet_uuid}", deleteNetworkSubnetHandler(svc))
-	mux.HandleFunc("GET /networks/{uuid}/subnets/{subnet_uuid}/subnets", listChildSubnetsHandler(svc))
-	mux.HandleFunc("POST /networks/{uuid}/subnets/{subnet_uuid}/subnets", createChildSubnetHandler(svc))
+func registerSubnetRoutes(mux *http.ServeMux, svc *service.SubnetService, authz *service.AuthorizationService) {
+	mux.HandleFunc("GET /networks/{uuid}/subnets", listNetworkSubnetsHandler(svc, authz))
+	mux.HandleFunc("POST /networks/{uuid}/subnets", createNetworkSubnetHandler(svc, authz))
+	mux.HandleFunc("GET /networks/{uuid}/subnets/{subnet_uuid}", getNetworkSubnetHandler(svc, authz))
+	mux.HandleFunc("PUT /networks/{uuid}/subnets/{subnet_uuid}", updateNetworkSubnetHandler(svc, authz))
+	mux.HandleFunc("DELETE /networks/{uuid}/subnets/{subnet_uuid}", deleteNetworkSubnetHandler(svc, authz))
+	mux.HandleFunc("GET /networks/{uuid}/subnets/{subnet_uuid}/subnets", listChildSubnetsHandler(svc, authz))
+	mux.HandleFunc("POST /networks/{uuid}/subnets/{subnet_uuid}/subnets", createChildSubnetHandler(svc, authz))
 }
 
-func listNetworkSubnetsHandler(svc *service.SubnetService) http.HandlerFunc {
+func listNetworkSubnetsHandler(svc *service.SubnetService, authz *service.AuthorizationService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		networkUUID, err := parseUUID(r.PathValue("uuid"))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid network uuid")
+			return
+		}
+		if !requireNetworkReadForSubnetList(w, r, authz, networkUUID) {
 			return
 		}
 
@@ -48,17 +51,31 @@ func listNetworkSubnetsHandler(svc *service.SubnetService) http.HandlerFunc {
 		if subnets == nil {
 			subnets = []*model.Subnet{}
 		}
+		if authz != nil {
+			filtered, err := authz.FilterReadableSubnets(r.Context(), principalFromContext(r.Context()), networkUUID, subnets)
+			if err != nil {
+				writeAuthzError(w, err, "subnet not found")
+				return
+			}
+			subnets = filtered
+		}
 
 		writeSuccess(w, http.StatusOK, subnets)
 	}
 }
 
-func createNetworkSubnetHandler(svc *service.SubnetService) http.HandlerFunc {
+func createNetworkSubnetHandler(svc *service.SubnetService, authz *service.AuthorizationService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		networkUUID, err := parseUUID(r.PathValue("uuid"))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid network uuid")
 			return
+		}
+		if authz != nil {
+			if err := authz.Require(r.Context(), principalFromContext(r.Context()), service.ActionCreate, model.GrantResourceNetwork, networkUUID); err != nil {
+				writeAuthzError(w, err, "network not found")
+				return
+			}
 		}
 
 		var req subnetRequest
@@ -86,7 +103,7 @@ func createNetworkSubnetHandler(svc *service.SubnetService) http.HandlerFunc {
 	}
 }
 
-func createChildSubnetHandler(svc *service.SubnetService) http.HandlerFunc {
+func createChildSubnetHandler(svc *service.SubnetService, authz *service.AuthorizationService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		networkUUID, err := parseUUID(r.PathValue("uuid"))
 		if err != nil {
@@ -97,6 +114,9 @@ func createChildSubnetHandler(svc *service.SubnetService) http.HandlerFunc {
 		parentSubnetUUID, err := parseUUID(r.PathValue("subnet_uuid"))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid subnet uuid")
+			return
+		}
+		if !requireSubnetInNetworkAction(w, r, authz, svc, networkUUID, parentSubnetUUID, service.ActionCreate) {
 			return
 		}
 
@@ -125,10 +145,13 @@ func createChildSubnetHandler(svc *service.SubnetService) http.HandlerFunc {
 	}
 }
 
-func getNetworkSubnetHandler(svc *service.SubnetService) http.HandlerFunc {
+func getNetworkSubnetHandler(svc *service.SubnetService, authz *service.AuthorizationService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		networkUUID, subnetUUID, ok := parseNetworkSubnetPath(w, r)
 		if !ok {
+			return
+		}
+		if !requireSubnetInNetworkAction(w, r, authz, svc, networkUUID, subnetUUID, service.ActionRead) {
 			return
 		}
 
@@ -142,10 +165,13 @@ func getNetworkSubnetHandler(svc *service.SubnetService) http.HandlerFunc {
 	}
 }
 
-func updateNetworkSubnetHandler(svc *service.SubnetService) http.HandlerFunc {
+func updateNetworkSubnetHandler(svc *service.SubnetService, authz *service.AuthorizationService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		networkUUID, subnetUUID, ok := parseNetworkSubnetPath(w, r)
 		if !ok {
+			return
+		}
+		if !requireSubnetInNetworkAction(w, r, authz, svc, networkUUID, subnetUUID, service.ActionUpdate) {
 			return
 		}
 
@@ -167,10 +193,13 @@ func updateNetworkSubnetHandler(svc *service.SubnetService) http.HandlerFunc {
 	}
 }
 
-func deleteNetworkSubnetHandler(svc *service.SubnetService) http.HandlerFunc {
+func deleteNetworkSubnetHandler(svc *service.SubnetService, authz *service.AuthorizationService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		networkUUID, subnetUUID, ok := parseNetworkSubnetPath(w, r)
 		if !ok {
+			return
+		}
+		if !requireSubnetInNetworkAction(w, r, authz, svc, networkUUID, subnetUUID, service.ActionDelete) {
 			return
 		}
 
@@ -183,7 +212,7 @@ func deleteNetworkSubnetHandler(svc *service.SubnetService) http.HandlerFunc {
 	}
 }
 
-func listChildSubnetsHandler(svc *service.SubnetService) http.HandlerFunc {
+func listChildSubnetsHandler(svc *service.SubnetService, authz *service.AuthorizationService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		networkUUID, err := parseUUID(r.PathValue("uuid"))
 		if err != nil {
@@ -196,6 +225,9 @@ func listChildSubnetsHandler(svc *service.SubnetService) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid subnet uuid")
 			return
 		}
+		if !requireSubnetInNetworkAction(w, r, authz, svc, networkUUID, parentSubnetUUID, service.ActionRead) {
+			return
+		}
 
 		subnets, err := svc.ListChildren(r.Context(), networkUUID, parentSubnetUUID)
 		if err != nil {
@@ -204,6 +236,14 @@ func listChildSubnetsHandler(svc *service.SubnetService) http.HandlerFunc {
 		}
 		if subnets == nil {
 			subnets = []*model.Subnet{}
+		}
+		if authz != nil {
+			filtered, err := authz.FilterReadableSubnets(r.Context(), principalFromContext(r.Context()), networkUUID, subnets)
+			if err != nil {
+				writeAuthzError(w, err, "subnet not found")
+				return
+			}
+			subnets = filtered
 		}
 
 		writeSuccess(w, http.StatusOK, subnets)
@@ -224,6 +264,32 @@ func parseNetworkSubnetPath(w http.ResponseWriter, r *http.Request) (uuid.UUID, 
 	}
 
 	return networkUUID, subnetUUID, true
+}
+
+func requireNetworkReadForSubnetList(w http.ResponseWriter, r *http.Request, authz *service.AuthorizationService, networkUUID uuid.UUID) bool {
+	if authz == nil {
+		return true
+	}
+	if err := authz.Require(r.Context(), principalFromContext(r.Context()), service.ActionRead, model.GrantResourceNetwork, networkUUID); err != nil {
+		writeAuthzError(w, err, "network not found")
+		return false
+	}
+	return true
+}
+
+func requireSubnetInNetworkAction(w http.ResponseWriter, r *http.Request, authz *service.AuthorizationService, svc *service.SubnetService, networkUUID, subnetUUID uuid.UUID, action service.Action) bool {
+	if _, err := svc.GetInNetwork(r.Context(), networkUUID, subnetUUID); err != nil {
+		writeSubnetError(w, err)
+		return false
+	}
+	if authz == nil {
+		return true
+	}
+	if err := authz.Require(r.Context(), principalFromContext(r.Context()), action, model.GrantResourceSubnet, subnetUUID); err != nil {
+		writeAuthzError(w, err, "subnet not found")
+		return false
+	}
+	return true
 }
 
 func writeSubnetError(w http.ResponseWriter, err error) {
