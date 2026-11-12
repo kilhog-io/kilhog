@@ -1127,9 +1127,29 @@ Workflows live under `.github/workflows/`.
 | Workflow | File | Trigger | Purpose |
 |----------|------|---------|---------|
 | **CI** | `ci.yml` | Push and pull requests to `main` | `go vet`, `go test ./...`, `make build-all`, Docker image build (not published), then cross-compile smoke builds for linux/darwin/windows (amd64/arm64 where applicable) |
+| **Dependency update** | `dependency-update.yml` | Daily at 05:00 UTC, and manual `workflow_dispatch` | Update Go modules, then `go vet`, `make build-all`, and `go test ./...`. Open a pull request only when `go.mod` / `go.sum` changed and those checks passed |
 | **Release** | `release.yml` | Push of tags matching `v*` | Re-run vet/tests, then in parallel: (1) build release archives (`kilhog` + `pogig`) per OS/arch and publish a GitHub Release with `.tar.gz` / `.zip` assets and `checksums.txt`; (2) build a multi-arch (`linux/amd64`, `linux/arm64`) Docker image and push it to Docker Hub |
 
 Go version is taken from `go.mod` via `actions/setup-go` (`go-version-file`). Builds use `CGO_ENABLED=0` for portable static binaries.
+
+### Daily dependency update
+
+`dependency-update.yml` runs every day at **05:00 UTC** (06:00 CET / 07:00 CEST, Europe/Paris). It can also be started from the Actions tab (`workflow_dispatch`). GitHub may delay a scheduled run during high load.
+
+The job checks out the default branch and then:
+
+1. Updates modules with `go get -u -t ./...` and `go mod tidy`. This moves direct and test dependencies to the newest minor or patch release of their **current major version** (a `v2` module is a different path and is not selected automatically).
+2. Runs `go vet ./...`.
+3. Compiles the native binaries with `make build-all` (`bin/kilhog` and `bin/pogig`).
+4. Runs unit tests with `go test ./...`.
+
+If vet, compile, or tests fail, the workflow fails and **no pull request is opened**. Nothing is merged automatically.
+
+When `go.mod` or `go.sum` changed and the checks passed, the job pushes branch `chore/update-go-dependencies` (force-with-lease, rebased on the default branch) and opens a pull request. A later run that finds the same module files already on that branch does not push again. The commit only contains `go.mod` and `go.sum`.
+
+Pushes made with the default `GITHUB_TOKEN` do not start other workflows, so `ci.yml` does not run on that pull request. Compile and test evidence for the update is the green **Dependency update** run. To also trigger `ci.yml` on the pull request, add a repository secret `DEPENDENCY_UPDATE_TOKEN` (fine-grained or classic personal access token with contents and pull-requests write). When that secret is set, checkout and the pull request use it.
+
+The Workers npm devDependency (`wrangler` in `workers/package.json`) is not updated by this job. Native compilation and `go test ./...` depend on the Go module graph.
 
 To publish a release:
 
