@@ -75,54 +75,55 @@ jobs:
           if ! git fetch origin "$branch" >/dev/null 2>&1; then
             echo "Branch ${branch} does not exist yet."
           fi
+          same_as_branch=false
           if git rev-parse --verify --quiet "refs/remotes/origin/${branch}" >/dev/null; then
             if git diff --quiet "origin/${branch}" -- go.mod go.sum; then
+              same_as_branch=true
               echo "Branch ${branch} already contains these module updates."
-              exit 0
             fi
           fi
 
-          cp go.mod /tmp/kilhog.go.mod
-          cp go.sum /tmp/kilhog.go.sum
-          git reset --hard "origin/${default_branch}"
-          git checkout -B "$branch" "origin/${default_branch}"
-          cp /tmp/kilhog.go.mod go.mod
-          cp /tmp/kilhog.go.sum go.sum
+          if [ "$same_as_branch" = false ]; then
+            cp go.mod /tmp/kilhog.go.mod
+            cp go.sum /tmp/kilhog.go.sum
+            git reset --hard "origin/${default_branch}"
+            git checkout -B "$branch" "origin/${default_branch}"
+            cp /tmp/kilhog.go.mod go.mod
+            cp /tmp/kilhog.go.sum go.sum
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add go.mod go.sum
-          git commit -m "chore: update Go dependencies"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add go.mod go.sum
+            git commit -m "chore: update Go dependencies"
 
-          gh auth setup-git
-          if git rev-parse --verify --quiet "refs/remotes/origin/${branch}" >/dev/null; then
-            git push --force-with-lease="refs/heads/${branch}:refs/remotes/origin/${branch}" origin "HEAD:${branch}"
+            gh auth setup-git
+            if git rev-parse --verify --quiet "refs/remotes/origin/${branch}" >/dev/null; then
+              git push --force-with-lease="refs/heads/${branch}:refs/remotes/origin/${branch}" origin "HEAD:${branch}"
+            else
+              git push origin "HEAD:${branch}"
+            fi
           else
-            git push origin "HEAD:${branch}"
+            gh auth setup-git
           fi
 
-          existing="$(gh pr list --base "$default_branch" --head "$branch" --state open --json number --jq 'length')"
-          if [ "$existing" != "0" ]; then
-            echo "Updated the open pull request for ${branch}."
-            exit 0
-          fi
-
-          gh pr create \
-            --base "$default_branch" \
-            --head "$branch" \
-            --title "chore: update Go dependencies" \
-            --body "$(cat <<'EOF'
+          number="$(gh pr list --base "$default_branch" --head "$branch" --state open --json number --jq '.[0].number // empty')"
+          if [ -z "$number" ]; then
+            gh pr create \
+              --base "$default_branch" \
+              --head "$branch" \
+              --title "chore: update Go dependencies" \
+              --body "$(cat <<'EOF'
           ## Summary
 
           Daily update of Go module dependencies (`go get -u -t ./...` and `go mod tidy`).
 
-          The dependency-update workflow already ran these checks on the updated modules before opening this pull request:
+          The dependency-update workflow already ran these checks on the updated modules:
 
           - `go vet ./...`
           - `make build-all`
           - `go test ./...`
 
-          Updates stay on the current major version of each module. This pull request is not merged automatically.
+          Updates stay on the current major version of each module. The workflow squash-merges this pull request after those checks pass.
 
           ## Test plan
 
@@ -130,4 +131,30 @@ jobs:
           - [x] `make build-all`
           - [x] `go test ./...`
           EOF
-          )"
+            )"
+            number="$(gh pr list --base "$default_branch" --head "$branch" --state open --json number --jq '.[0].number // empty')"
+          else
+            echo "Updated pull request #${number} for ${branch}."
+          fi
+
+          if [ -z "$number" ]; then
+            echo "No open pull request to merge."
+            exit 1
+          fi
+
+          echo "Squash-merging pull request #${number}."
+          attempt=1
+          while [ "$attempt" -le 5 ]; do
+            if gh pr merge "$number" --squash --delete-branch \
+              --subject "chore: update Go dependencies" \
+              --body "Daily Go module update. go vet, make build-all, and go test ./... passed in the dependency-update workflow."; then
+              echo "Merged pull request #${number}."
+              exit 0
+            fi
+            echo "Merge attempt ${attempt} did not succeed."
+            if [ "$attempt" -eq 5 ]; then
+              exit 1
+            fi
+            sleep 10
+            attempt=$((attempt + 1))
+          done

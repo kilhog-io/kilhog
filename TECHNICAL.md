@@ -1127,7 +1127,7 @@ Workflows live under `.github/workflows/`.
 | Workflow | File | Trigger | Purpose |
 |----------|------|---------|---------|
 | **CI** | `ci.yml` | Push and pull requests to `main` | `go vet`, `go test ./...`, `make build-all`, Docker image build (not published), then cross-compile smoke builds for linux/darwin/windows (amd64/arm64 where applicable) |
-| **Dependency update** | `dependency-update.yml` | Daily at 05:00 UTC, and manual `workflow_dispatch` | Update Go modules, then `go vet`, `make build-all`, and `go test ./...`. Open a pull request only when `go.mod` / `go.sum` changed and those checks passed |
+| **Dependency update** | `dependency-update.yml` | Daily at 05:00 UTC, and manual `workflow_dispatch` | Update Go modules, then `go vet`, `make build-all`, and `go test ./...`. When `go.mod` / `go.sum` changed and those checks passed, open a pull request and squash-merge it into the default branch |
 | **Release** | `release.yml` | Push of tags matching `v*` | Re-run vet/tests, then in parallel: (1) build release archives (`kilhog` + `pogig`) per OS/arch and publish a GitHub Release with `.tar.gz` / `.zip` assets and `checksums.txt`; (2) build a multi-arch (`linux/amd64`, `linux/arm64`) Docker image and push it to Docker Hub |
 
 Go version is taken from `go.mod` via `actions/setup-go` (`go-version-file`). Builds use `CGO_ENABLED=0` for portable static binaries.
@@ -1143,11 +1143,13 @@ The job checks out the default branch and then:
 3. Compiles the native binaries with `make build-all` (`bin/kilhog` and `bin/pogig`).
 4. Runs unit tests with `go test ./...`.
 
-If vet, compile, or tests fail, the workflow fails and **no pull request is opened**. Nothing is merged automatically.
+If vet, compile, or tests fail, the workflow fails and **no pull request is opened or merged**.
 
-When `go.mod` or `go.sum` changed and the checks passed, the job pushes branch `chore/update-go-dependencies` (force-with-lease, rebased on the default branch) and opens a pull request. A later run that finds the same module files already on that branch does not push again. The commit only contains `go.mod` and `go.sum`.
+When `go.mod` or `go.sum` changed and the checks passed, the job pushes branch `chore/update-go-dependencies` (force-with-lease, rebased on the default branch; the commit only contains `go.mod` and `go.sum`) and opens a pull request. It then **squash-merges** that pull request into the default branch and deletes the head branch. A later run that finds the same module files already on the head branch does not push again; it still merges the open pull request if a previous merge did not finish. The squash commit subject is `chore: update Go dependencies`.
 
-Pushes made with the default `GITHUB_TOKEN` do not start other workflows, so `ci.yml` does not run on that pull request. Compile and test evidence for the update is the green **Dependency update** run. To also trigger `ci.yml` on the pull request, add a repository secret `DEPENDENCY_UPDATE_TOKEN` (fine-grained or classic personal access token with contents and pull-requests write). When that secret is set, checkout and the pull request use it.
+This merge runs in the same job, after vet, compile, and unit tests. It does not use GitHub's auto-merge setting. A branch protection rule that requires a review or a status check this job did not satisfy will reject the merge; the pull request stays open and the workflow fails.
+
+Pushes and merges made with the default `GITHUB_TOKEN` do not start other workflows, so `ci.yml` does not run on that pull request or on the merge commit. Compile and test evidence for the update is the green **Dependency update** run. To also trigger `ci.yml`, add a repository secret `DEPENDENCY_UPDATE_TOKEN` (fine-grained or classic personal access token with contents and pull-requests write). When that secret is set, checkout, the pull request, and the merge use it.
 
 The Workers npm devDependency (`wrangler` in `workers/package.json`) is not updated by this job. Native compilation and `go test ./...` depend on the Go module graph.
 
