@@ -15,6 +15,7 @@ type IdentityPool struct {
 	ClientID     string    `json:"client_id"`
 	ClientSecret string    `json:"-"`
 	Scopes       []string  `json:"scopes"`
+	GroupsClaim  string    `json:"groups_claim"`
 	Enabled      bool      `json:"enabled"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`

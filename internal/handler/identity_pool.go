@@ -26,6 +26,7 @@ type createIdentityPoolRequest struct {
 	ClientID     string   `json:"client_id"`
 	ClientSecret string   `json:"client_secret"`
 	Scopes       []string `json:"scopes"`
+	GroupsClaim  string   `json:"groups_claim"`
 	Enabled      *bool    `json:"enabled"`
 }
 
@@ -37,6 +38,7 @@ type updateIdentityPoolRequest struct {
 	ClientSecret *string   `json:"client_secret"`
 	ClearSecret  bool      `json:"clear_secret"`
 	Scopes       *[]string `json:"scopes"`
+	GroupsClaim  *string   `json:"groups_claim"`
 	Enabled      *bool     `json:"enabled"`
 }
 
@@ -65,6 +67,7 @@ func createIdentityPoolHandler(pools *service.IdentityPoolService) http.HandlerF
 			ClientID:     req.ClientID,
 			ClientSecret: req.ClientSecret,
 			Scopes:       req.Scopes,
+			GroupsClaim:  req.GroupsClaim,
 			Enabled:      req.Enabled,
 		})
 		if err != nil {
@@ -111,6 +114,7 @@ func updateIdentityPoolHandler(pools *service.IdentityPoolService) http.HandlerF
 			ClientSecret: req.ClientSecret,
 			ClearSecret:  req.ClearSecret,
 			Scopes:       req.Scopes,
+			GroupsClaim:  req.GroupsClaim,
 			Enabled:      req.Enabled,
 		})
 		if err != nil {

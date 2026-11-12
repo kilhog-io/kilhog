@@ -17,6 +17,8 @@ type Dependencies struct {
 	UserService            *service.UserService
 	IdentityPoolService    *service.IdentityPoolService
 	MachineIdentityService *service.MachineIdentityService
+	GrantService           *service.GrantService
+	Authz                  *service.AuthorizationService
 	APIKey                 string
 	Metrics                *metrics.Provider
 }
@@ -31,10 +33,10 @@ func NewRouter(deps Dependencies) http.Handler {
 
 	protected := http.NewServeMux()
 	if deps.NetworkService != nil {
-		registerNetworkRoutes(protected, deps.NetworkService)
+		registerNetworkRoutes(protected, deps.NetworkService, deps.Authz, deps.GrantService)
 	}
 	if deps.SubnetService != nil {
-		registerSubnetRoutes(protected, deps.SubnetService)
+		registerSubnetRoutes(protected, deps.SubnetService, deps.Authz)
 	}
 	if deps.UserService != nil {
 		protected.HandleFunc("POST /users/me/password", changeOwnPasswordHandler(deps.UserService))
@@ -42,6 +44,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	registerUserAdminRoutes(protected, deps.UserService)
 	registerIdentityPoolRoutes(protected, deps.IdentityPoolService)
 	registerMachineIdentityRoutes(protected, deps.MachineIdentityService)
+	registerGrantRoutes(protected, deps.GrantService, deps.Authz)
 
 	mux.Handle("/", authMiddleware(deps.AuthService, deps.APIKey, protected))
 

@@ -22,6 +22,7 @@ type Repositories struct {
 	MachineProviders service.MachineProviderRepository
 	Machines         service.MachineRepository
 	MachineAPIKeys   service.MachineAPIKeyRepository
+	Grants           service.GrantRepository
 }
 
 func Open(ctx context.Context, cfg db.Config) (*Repositories, error) {
@@ -51,6 +52,7 @@ func Open(ctx context.Context, cfg db.Config) (*Repositories, error) {
 		MachineProviders: NewMachineProviderRepository(store),
 		Machines:         NewMachineRepository(store),
 		MachineAPIKeys:   NewMachineAPIKeyRepository(store),
+		Grants:           NewGrantRepository(store),
 	}, nil
 }
 

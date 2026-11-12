@@ -79,6 +79,88 @@ type UpdateSubnetInput struct {
 	Description string `json:"description,omitempty"`
 }
 
+// GrantPrincipalKind identifies a grant subject.
+type GrantPrincipalKind string
+
+const (
+	GrantPrincipalLocalUser   GrantPrincipalKind = "local_user"
+	GrantPrincipalOIDC        GrantPrincipalKind = "oidc"
+	GrantPrincipalOIDCGroup   GrantPrincipalKind = "oidc_group"
+	GrantPrincipalMachine     GrantPrincipalKind = "machine"
+	GrantPrincipalMachinePool GrantPrincipalKind = "machine_pool"
+)
+
+// GrantResourceKind identifies a grant object.
+type GrantResourceKind string
+
+const (
+	GrantResourceNetwork  GrantResourceKind = "network"
+	GrantResourceSubnet   GrantResourceKind = "subnet"
+	GrantResourcePlatform GrantResourceKind = "platform"
+)
+
+// Permissions are independent CRUD flags on a grant.
+type Permissions struct {
+	Create bool `json:"create"`
+	Read   bool `json:"read"`
+	Update bool `json:"update"`
+	Delete bool `json:"delete"`
+}
+
+// GrantPrincipal is the subject of a grant.
+type GrantPrincipal struct {
+	Kind             GrantPrincipalKind `json:"kind"`
+	LocalUserUUID    *uuid.UUID         `json:"local_user_uuid,omitempty"`
+	IdentityPoolUUID *uuid.UUID         `json:"identity_pool_uuid,omitempty"`
+	Subject          string             `json:"subject,omitempty"`
+	Group            string             `json:"group,omitempty"`
+	MachineUUID      *uuid.UUID         `json:"machine_uuid,omitempty"`
+	MachinePoolUUID  *uuid.UUID         `json:"machine_pool_uuid,omitempty"`
+}
+
+// GrantResource is the object of a grant.
+type GrantResource struct {
+	Kind       GrantResourceKind `json:"kind"`
+	UUID       *uuid.UUID        `json:"uuid,omitempty"`
+	Capability string            `json:"capability,omitempty"`
+}
+
+// Grant assigns permissions to one principal on one resource.
+type Grant struct {
+	UUID        uuid.UUID      `json:"uuid"`
+	Principal   GrantPrincipal `json:"principal"`
+	Resource    GrantResource  `json:"resource"`
+	Permissions Permissions    `json:"permissions"`
+	Owner       bool           `json:"owner"`
+	CreatedAt   string         `json:"created_at"`
+	UpdatedAt   string         `json:"updated_at"`
+}
+
+// CreateResourceGrantInput is the request body for POST .../grants.
+type CreateResourceGrantInput struct {
+	Principal   GrantPrincipal `json:"principal"`
+	Permissions Permissions    `json:"permissions"`
+	Owner       bool           `json:"owner,omitempty"`
+}
+
+// CreatePlatformGrantInput is the request body for POST /auth/platform-grants.
+type CreatePlatformGrantInput struct {
+	Principal  GrantPrincipal `json:"principal"`
+	Capability string         `json:"capability,omitempty"`
+}
+
+// UpdateGrantInput is the request body for PUT .../grants/{grant_uuid}.
+type UpdateGrantInput struct {
+	Permissions Permissions `json:"permissions"`
+	Owner       bool        `json:"owner"`
+}
+
+// TransferOwnershipInput is the request body for POST .../ownership/transfer.
+type TransferOwnershipInput struct {
+	From *GrantPrincipal `json:"from,omitempty"`
+	To   GrantPrincipal  `json:"to"`
+}
+
 // HealthStatus is returned by GET /healthz.
 type HealthStatus struct {
 	Status string `json:"status"`

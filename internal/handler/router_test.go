@@ -34,12 +34,23 @@ func authDepsFromRepos(repos *repository.Repositories, apiKey string) Dependenci
 		machines,
 		service.AuthConfig{APIKey: apiKey},
 	)
+	grants := service.NewGrantService(
+		repos.Grants,
+		repos.Users,
+		repos.IdentityPools,
+		repos.Machines,
+		repos.MachinePools,
+		repos.Networks,
+		repos.Subnets,
+	)
 	return Dependencies{
 		Store:                  repos.Store,
 		AuthService:            auth,
 		UserService:            service.NewUserService(repos.Users),
 		IdentityPoolService:    service.NewIdentityPoolService(repos.IdentityPools),
 		MachineIdentityService: machines,
+		GrantService:           grants,
+		Authz:                  service.NewAuthorizationService(repos.Grants, repos.Subnets),
 		APIKey:                 apiKey,
 	}
 }

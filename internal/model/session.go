@@ -25,6 +25,7 @@ type Session struct {
 	OIDCSubject      string
 	OIDCEmail        string
 	OIDCName         string
+	OIDCGroups       []string
 	ExpiresAt        time.Time
 	CreatedAt        time.Time
 }

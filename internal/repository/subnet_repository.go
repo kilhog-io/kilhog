@@ -259,6 +259,9 @@ func (r *SubnetRepository) Update(ctx context.Context, subnet *model.Subnet) err
 
 func (r *SubnetRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	return r.store.WithWriteTx(ctx, func(q db.Querier) error {
+		if err := deleteGrantsForSubnet(ctx, q, r.store.Dialect, id); err != nil {
+			return err
+		}
 		if err := deleteTagsForResource(ctx, q, r.store.Dialect, model.ParentKindSubnet, id); err != nil {
 			return err
 		}

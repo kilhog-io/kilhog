@@ -99,6 +99,16 @@ func main() {
 	authService := service.NewAuthService(repos.Users, repos.IdentityPools, repos.Sessions, repos.OIDCStates, machineService, authCfg)
 	userService := service.NewUserService(repos.Users)
 	poolService := service.NewIdentityPoolService(repos.IdentityPools)
+	grantService := service.NewGrantService(
+		repos.Grants,
+		repos.Users,
+		repos.IdentityPools,
+		repos.Machines,
+		repos.MachinePools,
+		repos.Networks,
+		repos.Subnets,
+	)
+	authz := service.NewAuthorizationService(repos.Grants, repos.Subnets)
 
 	server := &http.Server{
 		Addr: addr,
@@ -118,6 +128,8 @@ func main() {
 			UserService:            userService,
 			IdentityPoolService:    poolService,
 			MachineIdentityService: machineService,
+			GrantService:           grantService,
+			Authz:                  authz,
 			APIKey:                 apiKey,
 			Metrics:                metricsProvider,
 		}),

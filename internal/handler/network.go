@@ -16,15 +16,15 @@ type networkRequest struct {
 	Tags        []model.Tag `json:"tags"`
 }
 
-func registerNetworkRoutes(mux *http.ServeMux, svc *service.NetworkService) {
-	mux.HandleFunc("GET /networks", listNetworksHandler(svc))
-	mux.HandleFunc("POST /networks", createNetworkHandler(svc))
-	mux.HandleFunc("GET /networks/{uuid}", getNetworkHandler(svc))
-	mux.HandleFunc("PUT /networks/{uuid}", updateNetworkHandler(svc))
-	mux.HandleFunc("DELETE /networks/{uuid}", deleteNetworkHandler(svc))
+func registerNetworkRoutes(mux *http.ServeMux, svc *service.NetworkService, authz *service.AuthorizationService, grants *service.GrantService) {
+	mux.HandleFunc("GET /networks", listNetworksHandler(svc, authz))
+	mux.HandleFunc("POST /networks", createNetworkHandler(svc, authz, grants))
+	mux.HandleFunc("GET /networks/{uuid}", getNetworkHandler(svc, authz))
+	mux.HandleFunc("PUT /networks/{uuid}", updateNetworkHandler(svc, authz))
+	mux.HandleFunc("DELETE /networks/{uuid}", deleteNetworkHandler(svc, authz))
 }
 
-func listNetworksHandler(svc *service.NetworkService) http.HandlerFunc {
+func listNetworksHandler(svc *service.NetworkService, authz *service.AuthorizationService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		networks, err := svc.List(r.Context())
 		if err != nil {
@@ -35,13 +35,38 @@ func listNetworksHandler(svc *service.NetworkService) http.HandlerFunc {
 		if networks == nil {
 			networks = []*model.Network{}
 		}
+		if authz != nil {
+			ids, err := authz.VisibleNetworkUUIDs(r.Context(), principalFromContext(r.Context()), networks)
+			if err != nil {
+				writeAuthzError(w, err, "network not found")
+				return
+			}
+			allowed := make(map[uuid.UUID]struct{}, len(ids))
+			for _, id := range ids {
+				allowed[id] = struct{}{}
+			}
+			filtered := make([]*model.Network, 0, len(ids))
+			for _, network := range networks {
+				if _, ok := allowed[network.UUID]; ok {
+					filtered = append(filtered, network)
+				}
+			}
+			networks = filtered
+		}
 
 		writeSuccess(w, http.StatusOK, networks)
 	}
 }
 
-func createNetworkHandler(svc *service.NetworkService) http.HandlerFunc {
+func createNetworkHandler(svc *service.NetworkService, authz *service.AuthorizationService, grants *service.GrantService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if authz != nil {
+			if err := authz.RequireCreateNetworks(r.Context(), principalFromContext(r.Context())); err != nil {
+				writeAuthzError(w, err, "forbidden")
+				return
+			}
+		}
+
 		var req networkRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -57,16 +82,25 @@ func createNetworkHandler(svc *service.NetworkService) http.HandlerFunc {
 			writeNetworkError(w, err)
 			return
 		}
+		if grants != nil {
+			if err := grants.EnsureOwner(r.Context(), principalFromContext(r.Context()), network.UUID); err != nil {
+				writeGrantError(w, err)
+				return
+			}
+		}
 
 		writeSuccess(w, http.StatusCreated, network)
 	}
 }
 
-func getNetworkHandler(svc *service.NetworkService) http.HandlerFunc {
+func getNetworkHandler(svc *service.NetworkService, authz *service.AuthorizationService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := parseUUID(r.PathValue("uuid"))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid network uuid")
+			return
+		}
+		if !requireNetworkAction(w, r, authz, svc, id, service.ActionRead) {
 			return
 		}
 
@@ -80,11 +114,14 @@ func getNetworkHandler(svc *service.NetworkService) http.HandlerFunc {
 	}
 }
 
-func updateNetworkHandler(svc *service.NetworkService) http.HandlerFunc {
+func updateNetworkHandler(svc *service.NetworkService, authz *service.AuthorizationService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := parseUUID(r.PathValue("uuid"))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid network uuid")
+			return
+		}
+		if !requireNetworkAction(w, r, authz, svc, id, service.ActionUpdate) {
 			return
 		}
 
@@ -108,11 +145,14 @@ func updateNetworkHandler(svc *service.NetworkService) http.HandlerFunc {
 	}
 }
 
-func deleteNetworkHandler(svc *service.NetworkService) http.HandlerFunc {
+func deleteNetworkHandler(svc *service.NetworkService, authz *service.AuthorizationService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := parseUUID(r.PathValue("uuid"))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid network uuid")
+			return
+		}
+		if !requireNetworkAction(w, r, authz, svc, id, service.ActionDelete) {
 			return
 		}
 
@@ -123,6 +163,21 @@ func deleteNetworkHandler(svc *service.NetworkService) http.HandlerFunc {
 
 		writeSuccess(w, http.StatusOK, nil)
 	}
+}
+
+func requireNetworkAction(w http.ResponseWriter, r *http.Request, authz *service.AuthorizationService, svc *service.NetworkService, id uuid.UUID, action service.Action) bool {
+	if authz == nil {
+		return true
+	}
+	if _, err := svc.GetByUUID(r.Context(), id); err != nil {
+		writeNetworkError(w, err)
+		return false
+	}
+	if err := authz.Require(r.Context(), principalFromContext(r.Context()), action, model.GrantResourceNetwork, id); err != nil {
+		writeAuthzError(w, err, "network not found")
+		return false
+	}
+	return true
 }
 
 func parseUUID(raw string) (uuid.UUID, error) {

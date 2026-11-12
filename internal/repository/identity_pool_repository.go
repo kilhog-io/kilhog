@@ -31,11 +31,15 @@ func (r *IdentityPoolRepository) Create(ctx context.Context, pool *model.Identit
 			return fmt.Errorf("marshal scopes: %w", err)
 		}
 
+		if pool.GroupsClaim == "" {
+			pool.GroupsClaim = model.DefaultGroupsClaim
+		}
+
 		query := fmt.Sprintf(`
 			INSERT INTO oidc_identity_pools (
-				uuid, name, slug, issuer, client_id, client_secret, scopes, enabled, created_at, updated_at
+				uuid, name, slug, issuer, client_id, client_secret, scopes, groups_claim, enabled, created_at, updated_at
 			) VALUES (%s)
-		`, placeholders(r.store.Dialect, 10))
+		`, placeholders(r.store.Dialect, 11))
 
 		now := time.Now().UTC()
 		pool.CreatedAt = now
@@ -50,6 +54,7 @@ func (r *IdentityPoolRepository) Create(ctx context.Context, pool *model.Identit
 			pool.ClientID,
 			nullString(pool.ClientSecret),
 			string(scopesJSON),
+			pool.GroupsClaim,
 			boolToStore(r.store.Dialect, pool.Enabled),
 			formatTime(r.store.Dialect, now),
 			formatTime(r.store.Dialect, now),
@@ -62,7 +67,7 @@ func (r *IdentityPoolRepository) Create(ctx context.Context, pool *model.Identit
 
 func (r *IdentityPoolRepository) GetByUUID(ctx context.Context, id uuid.UUID) (*model.IdentityPool, error) {
 	query := fmt.Sprintf(`
-		SELECT uuid, name, slug, issuer, client_id, client_secret, scopes, enabled, created_at, updated_at
+		SELECT uuid, name, slug, issuer, client_id, client_secret, scopes, groups_claim, enabled, created_at, updated_at
 		FROM oidc_identity_pools WHERE uuid = %s
 	`, placeholder(r.store.Dialect, 1))
 	return r.scanOne(r.store.DB.QueryRowContext(ctx, query, uuidString(r.store.Dialect, id)))
@@ -70,7 +75,7 @@ func (r *IdentityPoolRepository) GetByUUID(ctx context.Context, id uuid.UUID) (*
 
 func (r *IdentityPoolRepository) GetBySlug(ctx context.Context, slug string) (*model.IdentityPool, error) {
 	query := fmt.Sprintf(`
-		SELECT uuid, name, slug, issuer, client_id, client_secret, scopes, enabled, created_at, updated_at
+		SELECT uuid, name, slug, issuer, client_id, client_secret, scopes, groups_claim, enabled, created_at, updated_at
 		FROM oidc_identity_pools WHERE slug = %s
 	`, placeholder(r.store.Dialect, 1))
 	return r.scanOne(r.store.DB.QueryRowContext(ctx, query, slug))
@@ -78,7 +83,7 @@ func (r *IdentityPoolRepository) GetBySlug(ctx context.Context, slug string) (*m
 
 func (r *IdentityPoolRepository) GetByIssuer(ctx context.Context, issuer string) (*model.IdentityPool, error) {
 	query := fmt.Sprintf(`
-		SELECT uuid, name, slug, issuer, client_id, client_secret, scopes, enabled, created_at, updated_at
+		SELECT uuid, name, slug, issuer, client_id, client_secret, scopes, groups_claim, enabled, created_at, updated_at
 		FROM oidc_identity_pools WHERE issuer = %s
 	`, placeholder(r.store.Dialect, 1))
 	return r.scanOne(r.store.DB.QueryRowContext(ctx, query, issuer))
@@ -99,6 +104,7 @@ func (r *IdentityPoolRepository) Update(ctx context.Context, pool *model.Identit
 			    client_id = %s,
 			    client_secret = %s,
 			    scopes = %s,
+			    groups_claim = %s,
 			    enabled = %s,
 			    updated_at = %s
 			WHERE uuid = %s
@@ -112,11 +118,16 @@ func (r *IdentityPoolRepository) Update(ctx context.Context, pool *model.Identit
 			placeholder(r.store.Dialect, 7),
 			placeholder(r.store.Dialect, 8),
 			placeholder(r.store.Dialect, 9),
+			placeholder(r.store.Dialect, 10),
 		)
 
 		now := time.Now().UTC()
 		pool.UpdatedAt = now
 		pool.HasClientSecret = pool.ClientSecret != ""
+
+		if pool.GroupsClaim == "" {
+			pool.GroupsClaim = model.DefaultGroupsClaim
+		}
 
 		res, err := q.ExecContext(ctx, query,
 			pool.Name,
@@ -125,6 +136,7 @@ func (r *IdentityPoolRepository) Update(ctx context.Context, pool *model.Identit
 			pool.ClientID,
 			nullString(pool.ClientSecret),
 			string(scopesJSON),
+			pool.GroupsClaim,
 			boolToStore(r.store.Dialect, pool.Enabled),
 			formatTime(r.store.Dialect, now),
 			uuidString(r.store.Dialect, pool.UUID),
@@ -163,7 +175,7 @@ func (r *IdentityPoolRepository) Delete(ctx context.Context, id uuid.UUID) error
 
 func (r *IdentityPoolRepository) List(ctx context.Context) ([]*model.IdentityPool, error) {
 	query := `
-		SELECT uuid, name, slug, issuer, client_id, client_secret, scopes, enabled, created_at, updated_at
+		SELECT uuid, name, slug, issuer, client_id, client_secret, scopes, groups_claim, enabled, created_at, updated_at
 		FROM oidc_identity_pools
 		ORDER BY name
 	`
@@ -172,7 +184,7 @@ func (r *IdentityPoolRepository) List(ctx context.Context) ([]*model.IdentityPoo
 
 func (r *IdentityPoolRepository) ListEnabled(ctx context.Context) ([]*model.IdentityPool, error) {
 	query := fmt.Sprintf(`
-		SELECT uuid, name, slug, issuer, client_id, client_secret, scopes, enabled, created_at, updated_at
+		SELECT uuid, name, slug, issuer, client_id, client_secret, scopes, groups_claim, enabled, created_at, updated_at
 		FROM oidc_identity_pools
 		WHERE enabled = %s
 		ORDER BY name
@@ -238,11 +250,12 @@ func scanIdentityPool(dialect db.Dialect, s scanner) (*model.IdentityPool, error
 		clientID     string
 		clientSecret sql.NullString
 		scopesRaw    string
+		groupsClaim  string
 		enabledRaw   any
 		createdRaw   any
 		updatedRaw   any
 	)
-	if err := s.Scan(&rawUUID, &name, &slug, &issuer, &clientID, &clientSecret, &scopesRaw, &enabledRaw, &createdRaw, &updatedRaw); err != nil {
+	if err := s.Scan(&rawUUID, &name, &slug, &issuer, &clientID, &clientSecret, &scopesRaw, &groupsClaim, &enabledRaw, &createdRaw, &updatedRaw); err != nil {
 		return nil, err
 	}
 
@@ -276,6 +289,7 @@ func scanIdentityPool(dialect db.Dialect, s scanner) (*model.IdentityPool, error
 		ClientID:        clientID,
 		ClientSecret:    clientSecret.String,
 		Scopes:          scopes,
+		GroupsClaim:     groupsClaim,
 		Enabled:         enabled,
 		CreatedAt:       createdAt,
 		UpdatedAt:       updatedAt,

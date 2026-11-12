@@ -83,6 +83,16 @@ func buildRouter() (http.Handler, error) {
 	authService := service.NewAuthService(repos.Users, repos.IdentityPools, repos.Sessions, repos.OIDCStates, machineService, authCfg)
 	userService := service.NewUserService(repos.Users)
 	poolService := service.NewIdentityPoolService(repos.IdentityPools)
+	grantService := service.NewGrantService(
+		repos.Grants,
+		repos.Users,
+		repos.IdentityPools,
+		repos.Machines,
+		repos.MachinePools,
+		repos.Networks,
+		repos.Subnets,
+	)
+	authz := service.NewAuthorizationService(repos.Grants, repos.Subnets)
 
 	slog.Info("kilhog worker ready", "db", cfg.Driver, "api_key", boolLabel(apiKey != ""))
 
@@ -94,6 +104,8 @@ func buildRouter() (http.Handler, error) {
 		UserService:            userService,
 		IdentityPoolService:    poolService,
 		MachineIdentityService: machineService,
+		GrantService:           grantService,
+		Authz:                  authz,
 		APIKey:                 apiKey,
 	}), nil
 }
